@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const net = require('net');
 const { spawn } = require('child_process');
 
 // 1. Vercel 또는 CI 클라우드 빌드 서버 환경 감지 시 에러 없이 안전하게 종료
@@ -48,24 +49,58 @@ if (!fs.existsSync(electronBinaryPath)) {
   process.exit(0);
 }
 
-// 3. 로컬 데스크톱 환경: 5173(Vite) 및 4000(Server) 준비 대기 후 Electron 실행
-const waitOn = require('wait-on');
-
-waitOn({
-  resources: ['tcp:5173', 'tcp:4000'],
-  timeout: 30000,
-})
-  .then(() => {
-    const child = spawn(electronBinaryPath, ['.'], {
-      stdio: 'inherit',
-      cwd: path.join(__dirname, '..'),
-    });
-
-    child.on('exit', (code) => {
-      process.exit(code ?? 0);
-    });
-  })
-  .catch((err) => {
-    console.warn('[DeskMate] 서버 대기 타임아웃:', err.message);
-    process.exit(0);
+function checkPortOpen(port, timeoutMs = 1000) {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      socket.destroy();
+      resolve(ok);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+    socket.connect(port, '127.0.0.1');
   });
+}
+
+function launchElectron(useDistFile = false) {
+  const env = { ...process.env };
+  if (useDistFile) {
+    env.USE_DIST_FILE = '1';
+  }
+  const child = spawn(electronBinaryPath, ['.'], {
+    stdio: 'inherit',
+    cwd: path.join(__dirname, '..'),
+    env,
+  });
+
+  child.on('exit', (code) => {
+    process.exit(code ?? 0);
+  });
+}
+
+(async () => {
+  // Vite(5173)가 이미 열려 있는지 확인하거나, 최대 5초 대기 후 안 열려 있으면 빌드된 dist/index.html로 즉시 실행!
+  const isViteUp = await checkPortOpen(5173, 800);
+  if (isViteUp) {
+    launchElectron(false);
+    return;
+  }
+
+  const waitOn = require('wait-on');
+  waitOn({
+    resources: ['tcp:5173'],
+    timeout: 6000,
+  })
+    .then(() => {
+      launchElectron(false);
+    })
+    .catch(() => {
+      // Vite 서버 없이 단독 실행(npm run start:electron)한 경우 dist/index.html 사용
+      launchElectron(true);
+    });
+})();

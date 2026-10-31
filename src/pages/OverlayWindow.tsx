@@ -113,21 +113,47 @@ export default function OverlayWindow({
     const socket = createSocketConnection();
     socketRef.current = socket;
 
-    // 1. 메인 창에서 방 입장 시 전달받은 데이터로 소켓 방 입장 (Electron IPC 또는 웹 내장 prop)
-    if (embeddedRoomData) {
-      setMyInfo(embeddedRoomData);
-      socket.emit('joinRoom', {
-        ...embeddedRoomData,
-        clientType: 'overlay',
-      });
-    }
-
-    const removeInitListener = window.electronAPI?.onInitOverlay((roomData) => {
+    const activateOverlayWithRoomData = (roomData: RoomOverlayInitData) => {
+      if (!roomData || !roomData.roomId || !roomData.userId) return;
       setMyInfo(roomData);
+
+      // 즉시 내 캐릭터를 바탕화면 하단(y: 88%)에 선(先)렌더링하여 빈 화면이 절대 나오지 않도록 보장!
+      setCharacters((prev) => ({
+        ...prev,
+        [roomData.userId]: prev[roomData.userId] || {
+          userId: roomData.userId,
+          nickname: roomData.nickname,
+          characterType: roomData.characterType,
+          x: 50,
+          y: GROUND_Y,
+          direction: 'right',
+          state: 'idle',
+          statusBadge: roomData.statusBadge || 'online',
+          activeEmote: null,
+        },
+      }));
+
       socket.emit('joinRoom', {
         ...roomData,
         clientType: 'overlay',
       });
+    };
+
+    // 1. 웹 내장 prop이 있는 경우 즉시 활성화
+    if (embeddedRoomData) {
+      activateOverlayWithRoomData(embeddedRoomData);
+    }
+
+    // 2. Electron 메인 프로세스에 이미 활성화된 방 정보가 있는지 능동 조회 (타이밍 누락 100% 방지)
+    window.electronAPI?.getCurrentRoom?.().then((savedRoom) => {
+      if (savedRoom) {
+        activateOverlayWithRoomData(savedRoom);
+      }
+    });
+
+    // 3. 메인 창 또는 로컬 브릿지에서 방 입장 시 전달받은 데이터로 활성화
+    const removeInitListener = window.electronAPI?.onInitOverlay((roomData) => {
+      activateOverlayWithRoomData(roomData);
     });
 
     // 2. 방 나가기 시 오버레이 상태 초기화

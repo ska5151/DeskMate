@@ -3,6 +3,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('electronAPI', {
   enterRoom: (roomData) => ipcRenderer.send('ENTER_ROOM', roomData),
   leaveRoom: () => ipcRenderer.send('LEAVE_ROOM'),
+  getCurrentRoom: () => ipcRenderer.invoke('GET_CURRENT_ROOM'),
+  relayRoomEvent: (payload) => ipcRenderer.send('RELAY_ROOM_EVENT', payload),
   setIgnoreMouse: (ignore) => ipcRenderer.send('SET_IGNORE_MOUSE', ignore),
   setOverlayFocusable: (focusable) =>
     ipcRenderer.send('SET_OVERLAY_FOCUSABLE', focusable),
@@ -23,6 +25,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = () => callback();
     ipcRenderer.on('CLEAR_OVERLAY', listener);
     return () => ipcRenderer.removeListener('CLEAR_OVERLAY', listener);
+  },
+  onRoomEventRelayed: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('ROOM_EVENT_RELAYED', listener);
+    return () => ipcRenderer.removeListener('ROOM_EVENT_RELAYED', listener);
   },
   onOpenQuickChat: (callback) => {
     const listener = () => callback();

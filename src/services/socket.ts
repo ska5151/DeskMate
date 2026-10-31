@@ -1,6 +1,5 @@
-import { io, Socket } from 'socket.io-client';
+import { Socket } from 'socket.io-client';
 import { RealtimeChannel } from '@supabase/supabase-js';
-import { api, isLocalEnvironment } from './api';
 import {
   directFetchMessages,
   directSaveMessage,
@@ -58,16 +57,17 @@ function parseMiniGameCommandClient(rawText: string) {
 }
 
 /**
- * Vercel 등 Serverless 클라우드 환경에서 로컬 Socket.io 서버(4000) 없이도
- * Supabase Realtime (Presence + Broadcast) 및 BroadcastChannel로 실시간 멀티플레이를 완벽히 구동하는 어댑터
+ * Electron 데스크톱(MainWindow & 바탕화면 OverlayWindow)과 Vercel 웹 브라우저 모두에서
+ * 로컬 4000번 서버 유무와 무관하게 Supabase Realtime + Electron IPC + BroadcastChannel로
+ * 100% 실시간 동기화를 보장하는 통합 멀티플레이어 어댑터
  */
 class SupabaseRealtimeSocketAdapter {
   private listeners: Map<string, Set<(...args: any[]) => void>> = new Map();
   private channel: RealtimeChannel | null = null;
   private localBus: BroadcastChannel | null = null;
+  private removeIpcRelayListener: (() => void) | null = null;
   private roomUsers: Record<string, CharacterState> = {};
   private currentRoomId: string | null = null;
-  private myUserId: string | null = null;
   private pomodoro: PomodoroState = {
     mode: 'focus',
     remainingSeconds: 25 * 60,
@@ -75,6 +75,23 @@ class SupabaseRealtimeSocketAdapter {
     updatedBy: null,
   };
   private pomoTimer: ReturnType<typeof setInterval> | null = null;
+
+  constructor() {
+    // Electron MainWindow <-> OverlayWindow 간 IPC 직접 중계 수신
+    if (typeof window !== 'undefined' && window.electronAPI?.onRoomEventRelayed) {
+      this.removeIpcRelayListener = window.electronAPI.onRoomEventRelayed(
+        ({ event, payload }) => {
+          if (!event) return;
+          if (event === 'roomStateUpdate') {
+            this.roomUsers = { ...this.roomUsers, ...payload };
+          } else if (event === 'characterMoved' && payload?.userId) {
+            this.roomUsers[payload.userId] = payload;
+          }
+          this.triggerLocal(event, payload);
+        }
+      );
+    }
+  }
 
   public on(event: string, cb: (...args: any[]) => void) {
     if (!this.listeners.has(event)) {
@@ -91,9 +108,10 @@ class SupabaseRealtimeSocketAdapter {
     }
   }
 
-  private broadcastBoth(event: string, payload: any) {
+  private broadcastAll(event: string, payload: any) {
     this.triggerLocal(event, payload);
     this.localBus?.postMessage({ event, payload });
+    window.electronAPI?.relayRoomEvent?.({ event, payload });
     if (this.channel) {
       this.channel.send({
         type: 'broadcast',
@@ -110,14 +128,20 @@ class SupabaseRealtimeSocketAdapter {
     }
 
     if (event === 'moveCharacter') {
-      const user = this.roomUsers[data.userId];
-      if (user) {
-        user.x = Math.max(3, Math.min(97, Number(data.x) || user.x));
-        user.y = Math.max(5, Math.min(95, Number(data.y) || user.y));
-        user.direction = data.direction === 'left' ? 'left' : 'right';
-        user.state = data.state || 'walk';
-        this.broadcastBoth('characterMoved', user);
-      }
+      const existing = this.roomUsers[data.userId];
+      const updatedUser: CharacterState = {
+        userId: data.userId,
+        nickname: data.nickname || existing?.nickname || data.userId,
+        characterType: data.characterType || existing?.characterType || 'cat',
+        x: Math.max(3, Math.min(97, Number(data.x) || existing?.x || 50)),
+        y: Math.max(5, Math.min(95, Number(data.y) || existing?.y || 88)),
+        direction: data.direction === 'left' ? 'left' : 'right',
+        state: data.state || 'walk',
+        statusBadge: data.statusBadge || existing?.statusBadge || 'online',
+        activeEmote: existing?.activeEmote || null,
+      };
+      this.roomUsers[data.userId] = updatedUser;
+      this.broadcastAll('characterMoved', updatedUser);
       return this;
     }
 
@@ -142,13 +166,13 @@ class SupabaseRealtimeSocketAdapter {
       };
 
       directSaveMessage(msgPayload);
-      this.broadcastBoth('receiveMessage', msgPayload);
+      this.broadcastAll('receiveMessage', msgPayload);
       return this;
     }
 
     if (event === 'triggerEmote') {
       const user = this.roomUsers[data.userId];
-      this.broadcastBoth('characterEmote', {
+      this.broadcastAll('characterEmote', {
         userId: data.userId,
         nickname: user?.nickname || data.userId,
         emoteType: data.emoteType,
@@ -164,7 +188,7 @@ class SupabaseRealtimeSocketAdapter {
       };
       const info = actionLabels[data.actionType] || actionLabels.pet;
 
-      this.broadcastBoth('characterInteraction', {
+      this.broadcastAll('characterInteraction', {
         ...data,
         badge: `${info.emoji} ${data.fromNickname}님과 ${
           data.actionType === 'highfive'
@@ -190,7 +214,7 @@ class SupabaseRealtimeSocketAdapter {
           }),
         };
         directSaveMessage(sysMsg);
-        this.broadcastBoth('receiveMessage', sysMsg);
+        this.broadcastAll('receiveMessage', sysMsg);
       }
       return this;
     }
@@ -199,7 +223,7 @@ class SupabaseRealtimeSocketAdapter {
       const user = this.roomUsers[data.userId];
       if (user) {
         user.statusBadge = data.statusBadge || 'online';
-        this.broadcastBoth('roomStateUpdate', { ...this.roomUsers });
+        this.broadcastAll('roomStateUpdate', { ...this.roomUsers });
       }
       return this;
     }
@@ -222,14 +246,14 @@ class SupabaseRealtimeSocketAdapter {
           this.pomodoro.mode === 'focus' ? 25 * 60 : 5 * 60;
       }
       this.pomodoro.updatedBy = data.nickname || null;
-      this.broadcastBoth('pomodoroUpdate', { ...this.pomodoro });
+      this.broadcastAll('pomodoroUpdate', { ...this.pomodoro });
       return this;
     }
 
     if (event === 'leaveRoom') {
       if (data?.userId && this.roomUsers[data.userId]) {
         delete this.roomUsers[data.userId];
-        this.broadcastBoth('roomStateUpdate', { ...this.roomUsers });
+        this.broadcastAll('roomStateUpdate', { ...this.roomUsers });
       }
       return this;
     }
@@ -240,23 +264,27 @@ class SupabaseRealtimeSocketAdapter {
   private async handleJoinRoom(data: any) {
     const { roomId, userId, nickname, characterType, statusBadge } = data;
     this.currentRoomId = roomId;
-    this.myUserId = userId;
 
+    const existing = this.roomUsers[userId];
     const myChar: CharacterState = {
       userId,
       nickname,
-      characterType: characterType || 'cat',
-      x: Math.floor(Math.random() * 65) + 18,
-      y: 88,
-      direction: 'right',
+      characterType: characterType || existing?.characterType || 'cat',
+      x: existing ? existing.x : 50,
+      y: existing ? existing.y : 88,
+      direction: existing ? existing.direction : 'right',
       state: 'idle',
-      statusBadge: statusBadge || 'online',
+      statusBadge: statusBadge || existing?.statusBadge || 'online',
       activeEmote: null,
     };
 
     this.roomUsers[userId] = myChar;
 
-    // 1) 같은 브라우저 창/탭 간 즉시 연동용 BroadcastChannel
+    // 즉시 로컬 리스너에 내 캐릭터 상태 전달 (빈 화면 0% 보장)
+    this.broadcastAll('roomStateUpdate', { ...this.roomUsers });
+    this.triggerLocal('pomodoroUpdate', { ...this.pomodoro });
+
+    // 1) 같은 브라우저/Electron 창 간 BroadcastChannel
     try {
       this.localBus?.close();
       this.localBus = new BroadcastChannel(`deskmate_bus_${roomId}`);
@@ -271,10 +299,10 @@ class SupabaseRealtimeSocketAdapter {
         this.triggerLocal(event, payload);
       };
     } catch {
-      // ignore if BroadcastChannel unsupported
+      // ignore
     }
 
-    // 2) Supabase Realtime 채널 연결 (전 세계 다른 접속자와 실시간 동기화)
+    // 2) Supabase Realtime 채널 연결 (Vercel 웹 유저 <-> Windows Electron 바탕화면 유저 간 실시간 연동!)
     if (supabaseClient) {
       if (this.channel) {
         supabaseClient.removeChannel(this.channel);
@@ -337,14 +365,11 @@ class SupabaseRealtimeSocketAdapter {
       this.channel = ch;
     }
 
-    // 3) 초기 상태 및 최근 채팅 히스토리 전달
-    this.broadcastBoth('roomStateUpdate', { ...this.roomUsers });
-    this.triggerLocal('pomodoroUpdate', { ...this.pomodoro });
-
+    // 3) 최근 채팅 히스토리 로드
     const history = await directFetchMessages(roomId);
     this.triggerLocal('roomHistory', history);
 
-    // 4) 포모도로 로컬 1초 틱
+    // 4) 포모도로 1초 틱
     if (this.pomoTimer) clearInterval(this.pomoTimer);
     this.pomoTimer = setInterval(() => {
       if (!this.pomodoro.isRunning) return;
@@ -357,7 +382,7 @@ class SupabaseRealtimeSocketAdapter {
           this.pomodoro.mode === 'focus' ? 'break' : 'focus';
         this.pomodoro.remainingSeconds =
           this.pomodoro.mode === 'focus' ? 25 * 60 : 5 * 60;
-        this.broadcastBoth('pomodoroUpdate', { ...this.pomodoro });
+        this.broadcastAll('pomodoroUpdate', { ...this.pomodoro });
       }
     }, 1000);
   }
@@ -367,6 +392,8 @@ class SupabaseRealtimeSocketAdapter {
       clearInterval(this.pomoTimer);
       this.pomoTimer = null;
     }
+    this.removeIpcRelayListener?.();
+    this.removeIpcRelayListener = null;
     this.localBus?.close();
     this.localBus = null;
     if (this.channel && supabaseClient) {
@@ -378,13 +405,5 @@ class SupabaseRealtimeSocketAdapter {
 }
 
 export function createSocketConnection(): Socket {
-  // Vercel 등 웹 배포 환경에서는 즉시 Supabase Realtime 어댑터 반환
-  if (!isLocalEnvironment()) {
-    return new SupabaseRealtimeSocketAdapter() as unknown as Socket;
-  }
-
-  return io(api.getServerUrl(), {
-    transports: ['websocket', 'polling'],
-    reconnection: true,
-  });
+  return new SupabaseRealtimeSocketAdapter() as unknown as Socket;
 }

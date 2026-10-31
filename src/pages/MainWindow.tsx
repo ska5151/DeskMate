@@ -292,7 +292,19 @@ export default function MainWindow() {
       statusBadge: myStatusBadge,
     };
 
+    // Electron IPC로 바탕화면 오버레이 창 활성화
     window.electronAPI?.enterRoom(overlayPayload);
+
+    // 만약 일반 웹 브라우저(Vercel URL)에서 접속한 경우에도 로컬 PC에서 실행 중인 Electron 바탕화면 오버레이 브릿지(127.0.0.1:45678)를 깨움!
+    if (!window.electronAPI) {
+      fetch('http://127.0.0.1:45678/enter-room', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(overlayPayload),
+      }).catch(() => {
+        // 로컬 Electron 앱이 아직 안 켜져 있으면 아래 deskmate:// 버튼으로 실행 가능
+      });
+    }
 
     socketRef.current?.disconnect();
     const socket = createSocketConnection();
@@ -392,6 +404,11 @@ export default function MainWindow() {
     }
 
     window.electronAPI?.leaveRoom();
+    if (!window.electronAPI) {
+      fetch('http://127.0.0.1:45678/leave-room', { method: 'POST' }).catch(
+        () => {}
+      );
+    }
     setCurrentRoom(null);
     setRoomUsers({});
     await fetchRoomList();
@@ -879,11 +896,43 @@ export default function MainWindow() {
             </div>
           </div>
 
-          {/* 웹 브라우저(Vercel 등 Electron이 없는 환경)에서 접속 시 내장 Rive 캐릭터 오버레이 스테이지 표시 */}
+          {/* 웹 브라우저(Vercel 등 Electron이 없는 환경)에서 접속 시 내장 Rive 캐릭터 오버레이 스테이지 및 Windows 바탕화면 실행 버튼 표시 */}
           {!window.electronAPI && user.characterType && (
             <div className="web-embedded-overlay-stage">
-              <div className="web-stage-badge">
-                🖥️ 실시간 캐릭터 스테이지 (캐릭터 드래그 & 더블클릭 가능)
+              <div className="web-stage-top-bar">
+                <span className="web-stage-badge">
+                  🖥️ 웹 미리보기 스테이지 (캐릭터 드래그 가능)
+                </span>
+                <a
+                  className="launch-desktop-overlay-btn"
+                  href={`deskmate://enter-room?roomId=${encodeURIComponent(
+                    currentRoom.roomId
+                  )}&roomName=${encodeURIComponent(
+                    currentRoom.roomName
+                  )}&userId=${encodeURIComponent(
+                    user.userId
+                  )}&nickname=${encodeURIComponent(
+                    user.nickname
+                  )}&characterType=${encodeURIComponent(
+                    user.characterType
+                  )}&statusBadge=${encodeURIComponent(myStatusBadge)}`}
+                  onClick={() => {
+                    fetch('http://127.0.0.1:45678/enter-room', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        roomId: currentRoom.roomId,
+                        roomName: currentRoom.roomName,
+                        userId: user.userId,
+                        nickname: user.nickname,
+                        characterType: user.characterType,
+                        statusBadge: myStatusBadge,
+                      }),
+                    }).catch(() => {});
+                  }}
+                >
+                  🚀 Windows 바탕화면에 캐릭터 띄우기
+                </a>
               </div>
               <OverlayWindow
                 embeddedRoomData={{
