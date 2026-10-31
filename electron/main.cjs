@@ -26,14 +26,12 @@ let selectedDisplayId = null;
 
 const VITE_DEV_URL = process.env.VITE_DEV_URL || 'http://localhost:5173';
 const BRIDGE_PORT = 45678;
+const APP_ROOT = path.resolve(__dirname, '..');
 
-// Windows 커스텀 URL 프로토콜(deskmate://) 등록 (Vercel 웹 브라우저에서 원클릭으로 바탕화면 오버레이 호출 지원)
+// Windows 커스텀 URL 프로토콜(deskmate://) 등록
+// 반드시 APP_ROOT(프로젝트 절대 경로)를 두 번째 인자로 명시해야 브라우저에서 [열기] 클릭 시 창이 닫히지 않고 실행됩니다!
 if (process.defaultApp) {
-  if (process.argv.length >= 2) {
-    app.setAsDefaultProtocolClient('deskmate', process.execPath, [
-      path.resolve(process.argv[1]),
-    ]);
-  }
+  app.setAsDefaultProtocolClient('deskmate', process.execPath, [APP_ROOT]);
 } else {
   app.setAsDefaultProtocolClient('deskmate');
 }
@@ -227,6 +225,16 @@ function startLocalDesktopBridgeServer() {
         return;
       }
 
+      if (req.url === '/open' && (req.method === 'POST' || req.method === 'GET')) {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.show();
+          mainWindow.focus();
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, opened: true }));
+        return;
+      }
+
       if (req.url === '/enter-room' && req.method === 'POST') {
         let body = '';
         req.on('data', (chunk) => {
@@ -277,7 +285,14 @@ function startLocalDesktopBridgeServer() {
 function handleDeepLinkUrl(rawUrl) {
   try {
     const parsed = new URL(rawUrl);
-    if (parsed.hostname === 'enter-room' || parsed.pathname.includes('enter-room')) {
+    const targetAction = `${parsed.hostname}${parsed.pathname}`;
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+
+    if (targetAction.includes('enter-room')) {
       const roomData = {
         roomId: parsed.searchParams.get('roomId') || 'plaza',
         roomName: parsed.searchParams.get('roomName') || '광장',
@@ -289,7 +304,10 @@ function handleDeepLinkUrl(rawUrl) {
       activateDesktopOverlay(roomData);
     }
   } catch {
-    // ignore invalid url
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
   }
 }
 
@@ -352,11 +370,8 @@ function updateTrayMenu() {
 
 function loadWindowWithDistFallback(win, hashRoute) {
   const distIndex = path.join(__dirname, '../dist/index.html');
-  const shouldUseDist =
-    (app.isPackaged || process.env.USE_DIST_FILE === '1') &&
-    fs.existsSync(distIndex);
-
-  if (shouldUseDist) {
+  // 브라우저(deskmate://)나 단독 실행으로 켜졌을 때 꺼져 있는 localhost:5173을 기다리지 않고 즉시 dist/index.html 로드!
+  if (fs.existsSync(distIndex) && process.env.VITE_DEV_MODE !== '1') {
     win.loadFile(distIndex, { hash: `/${hashRoute}` });
     return;
   }

@@ -111,6 +111,35 @@ export default function MainWindow() {
     };
   }, []);
 
+  // 웹 브라우저(Vercel 링크 등, !window.electronAPI)로 접속 시 처음부터 자동으로 Electron 데스크톱 앱 실행!
+  useEffect(() => {
+    if (window.electronAPI) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        // 1. 이미 백그라운드/트레이에 켜져 있는 로컬 Electron이 있다면 즉시 창을 앞으로 띄움
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 700);
+        const res = await fetch('http://127.0.0.1:45678/open', {
+          method: 'POST',
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        if (res.ok) return;
+      } catch {
+        // 2. 로컬 Electron이 꺼져 있으면 자동으로 deskmate://open 프로토콜을 실행하여 Electron 앱 기동!
+        if (!cancelled) {
+          window.location.href = 'deskmate://open';
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
@@ -433,6 +462,16 @@ export default function MainWindow() {
         </div>
 
         <div className="header-actions">
+          {!window.electronAPI && (
+            <a
+              href="deskmate://open"
+              className="icon-pill-btn dnd-on"
+              style={{ textDecoration: 'none' }}
+              title="DeskMate Windows 데스크톱(Electron) 앱으로 열기"
+            >
+              🚀 Electron 앱 열기
+            </a>
+          )}
           <button
             type="button"
             className={isMuted ? 'icon-pill-btn off' : 'icon-pill-btn'}
