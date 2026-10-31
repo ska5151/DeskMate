@@ -6,6 +6,7 @@ import {
   EMOTE_OPTIONS,
   STATUS_BADGE_OPTIONS,
 } from '../components/CharacterAvatar';
+import OverlayWindow from './OverlayWindow';
 import { api } from '../services/api';
 import { createSocketConnection } from '../services/socket';
 import {
@@ -877,6 +878,25 @@ export default function MainWindow() {
               </button>
             </div>
           </div>
+
+          {/* 웹 브라우저(Vercel 등 Electron이 없는 환경)에서 접속 시 내장 Rive 캐릭터 오버레이 스테이지 표시 */}
+          {!window.electronAPI && user.characterType && (
+            <div className="web-embedded-overlay-stage">
+              <div className="web-stage-badge">
+                🖥️ 실시간 캐릭터 스테이지 (캐릭터 드래그 & 더블클릭 가능)
+              </div>
+              <OverlayWindow
+                embeddedRoomData={{
+                  roomId: currentRoom.roomId,
+                  roomName: currentRoom.roomName,
+                  userId: user.userId,
+                  nickname: user.nickname,
+                  characterType: user.characterType,
+                  statusBadge: myStatusBadge,
+                }}
+              />
+            </div>
+          )}
 
           {/* 실시간 채팅 메시지 영역 */}
           <div className="chat-messages">

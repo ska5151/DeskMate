@@ -28,8 +28,16 @@ const EMOTE_BADGE_TEXT: Record<EmoteType, string> = {
   sleep: '💤 쿨쿨 Zzz...',
 };
 
-export default function OverlayWindow() {
-  const [myInfo, setMyInfo] = useState<RoomOverlayInitData | null>(null);
+interface OverlayWindowProps {
+  embeddedRoomData?: RoomOverlayInitData | null;
+}
+
+export default function OverlayWindow({
+  embeddedRoomData = null,
+}: OverlayWindowProps) {
+  const [myInfo, setMyInfo] = useState<RoomOverlayInitData | null>(
+    embeddedRoomData
+  );
   const [characters, setCharacters] = useState<Record<string, CharacterState>>(
     {}
   );
@@ -105,7 +113,15 @@ export default function OverlayWindow() {
     const socket = createSocketConnection();
     socketRef.current = socket;
 
-    // 1. 메인 창에서 방 입장 시 전달받은 데이터로 소켓 방 입장
+    // 1. 메인 창에서 방 입장 시 전달받은 데이터로 소켓 방 입장 (Electron IPC 또는 웹 내장 prop)
+    if (embeddedRoomData) {
+      setMyInfo(embeddedRoomData);
+      socket.emit('joinRoom', {
+        ...embeddedRoomData,
+        clientType: 'overlay',
+      });
+    }
+
     const removeInitListener = window.electronAPI?.onInitOverlay((roomData) => {
       setMyInfo(roomData);
       socket.emit('joinRoom', {
@@ -535,8 +551,8 @@ export default function OverlayWindow() {
   return (
     <div
       style={{
-        width: '100vw',
-        height: '100vh',
+        width: embeddedRoomData ? '100%' : '100vw',
+        height: embeddedRoomData ? '100%' : '100vh',
         position: 'relative',
         overflow: 'hidden',
         background: 'transparent',
