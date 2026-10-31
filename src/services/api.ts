@@ -1,7 +1,23 @@
 import { CharacterType, RoomSummary, User } from '../types';
 
-const SERVER_URL =
-  import.meta.env.VITE_SERVER_URL || 'http://localhost:4000';
+function resolveServerUrl(): string {
+  if (import.meta.env.VITE_SERVER_URL) {
+    return import.meta.env.VITE_SERVER_URL;
+  }
+  // 로컬 개발(localhost 또는 file:// Electron) 환경에서는 기본 포트 4000 사용,
+  // Vercel 등 웹 배포 도메인에서는 현재 도메인의 상대 경로('')를 사용하여 /api/* 호출
+  if (
+    typeof window !== 'undefined' &&
+    window.location.hostname !== 'localhost' &&
+    window.location.hostname !== '127.0.0.1' &&
+    window.location.protocol !== 'file:'
+  ) {
+    return window.location.origin;
+  }
+  return 'http://localhost:4000';
+}
+
+const SERVER_URL = resolveServerUrl();
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${SERVER_URL}${path}`, {

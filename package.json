@@ -2,20 +2,21 @@
   "name": "deskmate",
   "private": true,
   "version": "1.0.0",
-  "description": "Windows 바탕화면 멀티플레이어 캐릭터 채팅 프로그램 (React + Electron + Socket.io + Supabase)",
+  "description": "Windows 바탕화면 멀티플레이어 캐릭터 채팅 프로그램 (React + Electron + Socket.io + Supabase + Rive)",
   "main": "electron/main.cjs",
   "scripts": {
     "dev:vite": "vite --port 5173",
     "dev:server": "node server/index.js",
-    "dev:electron": "wait-on tcp:5173 tcp:4000 && electron .",
-    "dev": "concurrently -k \"npm:dev:server\" \"npm:dev:vite\" \"npm:dev:electron\"",
+    "dev:electron": "node scripts/start-electron-safe.cjs",
+    "dev": "concurrently --kill-others-on-fail \"npm:dev:server\" \"npm:dev:vite\" \"npm:dev:electron\"",
     "build": "tsc -b && vite build",
+    "vercel-build": "tsc -b && vite build",
     "preview": "vite preview",
     "start:server": "node server/index.js",
-    "start:electron": "electron ."
+    "start:electron": "node scripts/start-electron-safe.cjs"
   },
   "dependencies": {
-    "@rive-app/react-canvas": "^4.38.0",
+    "@rive-app/react-canvas": "^4.27.3",
     "@supabase/supabase-js": "^2.45.4",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",

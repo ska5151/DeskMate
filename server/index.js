@@ -648,10 +648,15 @@ io.on('connection', (socket) => {
 });
 
 const PORT = Number(process.env.PORT) || 4000;
-server.listen(PORT, () => {
-  console.log(
-    `[DeskMate Server v2] Socket.io 및 REST 서버 실행 중 (Port: ${PORT}, DB 모드: ${
-      isSupabaseConfigured ? 'Supabase PostgreSQL' : 'In-Memory Fallback'
-    })`
-  );
-});
+
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log(
+      `[DeskMate Server v2] Socket.io 및 REST 서버 실행 중 (Port: ${PORT}, DB 모드: ${
+        isSupabaseConfigured ? 'Supabase PostgreSQL' : 'In-Memory Fallback'
+      })`
+    );
+  });
+}
+
+module.exports = { app, server, io };
