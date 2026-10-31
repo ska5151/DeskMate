@@ -13,7 +13,8 @@
     "vercel-build": "tsc -b && vite build",
     "preview": "vite preview",
     "start:server": "node server/index.js",
-    "start:electron": "node scripts/start-electron-safe.cjs"
+    "start:electron": "node scripts/start-electron-safe.cjs",
+    "dist:win": "npm run build && electron-builder --win --dir"
   },
   "dependencies": {
     "@rive-app/react-canvas": "^4.27.3",

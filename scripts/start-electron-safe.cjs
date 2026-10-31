@@ -49,7 +49,7 @@ if (!fs.existsSync(electronBinaryPath)) {
   process.exit(0);
 }
 
-function checkPortOpen(port, timeoutMs = 1000) {
+function checkPortOpen(port, timeoutMs = 600) {
   return new Promise((resolve) => {
     const socket = new net.Socket();
     let done = false;
@@ -84,23 +84,28 @@ function launchElectron(useDistFile = false) {
 }
 
 (async () => {
-  // Vite(5173)가 이미 열려 있는지 확인하거나, 최대 5초 대기 후 안 열려 있으면 빌드된 dist/index.html로 즉시 실행!
-  const isViteUp = await checkPortOpen(5173, 800);
+  const isViteUp = await checkPortOpen(5173, 600);
   if (isViteUp) {
     launchElectron(false);
+    return;
+  }
+
+  const distIndex = path.join(__dirname, '..', 'dist', 'index.html');
+  if (fs.existsSync(distIndex)) {
+    // dist/index.html이 이미 빌드되어 있으면 기다리지 않고 즉시 실행!
+    launchElectron(true);
     return;
   }
 
   const waitOn = require('wait-on');
   waitOn({
     resources: ['tcp:5173'],
-    timeout: 6000,
+    timeout: 8000,
   })
     .then(() => {
       launchElectron(false);
     })
     .catch(() => {
-      // Vite 서버 없이 단독 실행(npm run start:electron)한 경우 dist/index.html 사용
       launchElectron(true);
     });
 })();

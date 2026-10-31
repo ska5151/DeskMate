@@ -351,12 +351,20 @@ function updateTrayMenu() {
 }
 
 function loadWindowWithDistFallback(win, hashRoute) {
-  const targetUrl = getRouteUrl(hashRoute);
+  const distIndex = path.join(__dirname, '../dist/index.html');
+  const shouldUseDist =
+    (app.isPackaged || process.env.USE_DIST_FILE === '1') &&
+    fs.existsSync(distIndex);
+
+  if (shouldUseDist) {
+    win.loadFile(distIndex, { hash: `/${hashRoute}` });
+    return;
+  }
+
+  const targetUrl = `${VITE_DEV_URL}/#/${hashRoute}`;
   win.loadURL(targetUrl).catch(() => {
-    // 만약 localhost:5173이 실행 중이 아닐 때(예: npm run start:electron 단독 실행 시) 빌드된 dist/index.html로 자동 폴백!
-    const distIndex = path.join(__dirname, '../dist/index.html');
     if (fs.existsSync(distIndex)) {
-      win.loadURL(`file://${distIndex}#/${hashRoute}`);
+      win.loadFile(distIndex, { hash: `/${hashRoute}` });
     }
   });
 }
