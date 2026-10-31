@@ -8,7 +8,9 @@ const {
   VALID_CHARACTER_TYPES,
   isSupabaseConfigured,
   findUserById,
+  findUserByNickname,
   createUser,
+  updateUserNickname,
   updateUserCharacter,
   resetAllUsersCharacters,
   fetchPersistedRooms,
@@ -158,6 +160,11 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(409).json({ message: '이미 사용 중인 아이디입니다.' });
     }
 
+    const dupNick = await findUserByNickname(nickname.trim());
+    if (dupNick) {
+      return res.status(409).json({ message: '이미 사용 중인 닉네임입니다.' });
+    }
+
     const passwordHash = await bcrypt.hash(password, 10);
     const created = await createUser({
       id: id.trim(),
@@ -246,6 +253,31 @@ app.post('/api/user/character', async (req, res) => {
     return res
       .status(500)
       .json({ message: err.message || '캐릭터 저장 중 오류가 발생했습니다.' });
+  }
+});
+
+// 닉네임 변경 API (중복 불가)
+app.post('/api/user/nickname', async (req, res) => {
+  try {
+    const { userId, nickname } = req.body || {};
+    if (!userId || !nickname || !String(nickname).trim()) {
+      return res.status(400).json({ message: '변경할 닉네임을 입력해 주세요.' });
+    }
+
+    const updated = await updateUserNickname(userId, String(nickname).trim());
+    return res.json({
+      user: {
+        userId: updated.id,
+        nickname: updated.nickname,
+        characterType: updated.character_type,
+      },
+    });
+  } catch (err) {
+    console.error('[POST /api/user/nickname]', err);
+    const status = err.statusCode || 500;
+    return res
+      .status(status)
+      .json({ message: err.message || '닉네임 변경 중 오류가 발생했습니다.' });
   }
 });
 

@@ -4,7 +4,6 @@ import {
   CHARACTER_OPTIONS,
   CharacterAvatar,
   EMOTE_OPTIONS,
-  STATUS_BADGE_OPTIONS,
 } from '../components/CharacterAvatar';
 import OverlayWindow from './OverlayWindow';
 import { api } from '../services/api';
@@ -38,6 +37,8 @@ export default function MainWindow() {
   const [user, setUser] = useState<User | null>(null);
   const [selectedChar, setSelectedChar] = useState<CharacterType>('cat');
   const [myStatusBadge, setMyStatusBadge] = useState<StatusBadgeType>('online');
+  const [isEditingNickname, setIsEditingNickname] = useState(false);
+  const [editNicknameInput, setEditNicknameInput] = useState('');
 
   // 로비 & 방 상태 (비밀방 비밀번호, 초대 코드 포함)
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
@@ -152,28 +153,6 @@ export default function MainWindow() {
     };
   }, []);
 
-  // 웹 브라우저(Vercel 링크 등, !window.electronAPI)로 접속 시 처음부터 자동으로 Electron 데스크톱 앱 실행!
-  useEffect(() => {
-    if (window.electronAPI) return;
-
-    (async () => {
-      try {
-        // 1. 이미 켜져 있는 로컬 Electron이 있다면 즉시 창을 화면 최상단 앞으로 띄움
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 450);
-        const res = await fetch('http://127.0.0.1:45678/open', {
-          method: 'GET',
-          signal: controller.signal,
-        });
-        clearTimeout(timer);
-        if (res.ok) return;
-      } catch {
-        // 2. 로컬 Electron이 꺼져 있거나 응답이 없으면 즉시 deskmate://open 프로토콜 실행!
-        window.location.href = 'deskmate://open';
-      }
-    })();
-  }, []);
-
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
@@ -262,6 +241,39 @@ export default function MainWindow() {
       setStep('SELECT_CHAR');
     } catch (err: any) {
       setErrorMsg(err.message || '캐릭터 초기화에 실패했습니다.');
+    }
+  };
+
+  // 방 목록(로비)에서 닉네임 변경 (중복 불가)
+  const handleUpdateNickname = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+    const trimmed = editNicknameInput.trim();
+    if (!trimmed) {
+      setErrorMsg('변경할 닉네임을 입력해 주세요.');
+      return;
+    }
+    if (trimmed === user.nickname) {
+      setIsEditingNickname(false);
+      setErrorMsg(null);
+      return;
+    }
+
+    setErrorMsg(null);
+    setLoading(true);
+    try {
+      const res = await api.updateNickname({
+        userId: user.userId,
+        nickname: trimmed,
+      });
+      setUser(res.user);
+      setIsEditingNickname(false);
+      setEditNicknameInput('');
+      sound.playBubblePop(user.characterType || 'cat');
+    } catch (err: any) {
+      setErrorMsg(err.message || '닉네임 변경에 실패했습니다.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -360,39 +372,9 @@ export default function MainWindow() {
       statusBadge: myStatusBadge,
     };
 
-    // Electron IPC로 바탕화면 오버레이 창 활성화
+    // Electron IPC로 바탕화면 오버레이 창 활성화 (선택적 호환 유지)
     if (!skipIpcTrigger) {
       window.electronAPI?.enterRoom(overlayPayload);
-    }
-
-    // 만약 일반 웹 브라우저(Vercel URL)에서 방에 입장한 경우:
-    // 1) 로컬 브릿지(127.0.0.1:45678/enter-room?...) GET 호출 (CORS 프리플라이트 없음)
-    // 2) 로컬 브릿지가 응답하지 않으면 즉시 자동으로 deskmate://enter-room?... 딥링크를 실행하여 바탕화면에 캐릭터 표시!
-    if (!window.electronAPI) {
-      const qs = new URLSearchParams({
-        roomId: overlayPayload.roomId,
-        roomName: overlayPayload.roomName,
-        userId: overlayPayload.userId,
-        nickname: overlayPayload.nickname,
-        characterType: overlayPayload.characterType,
-        statusBadge: overlayPayload.statusBadge,
-      }).toString();
-
-      (async () => {
-        try {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 500);
-          const res = await fetch(`http://127.0.0.1:45678/enter-room?${qs}`, {
-            method: 'GET',
-            signal: controller.signal,
-          });
-          clearTimeout(timer);
-          if (res.ok) return;
-          window.location.href = `deskmate://enter-room?${qs}`;
-        } catch {
-          window.location.href = `deskmate://enter-room?${qs}`;
-        }
-      })();
     }
 
     socketRef.current?.disconnect();
@@ -434,6 +416,11 @@ export default function MainWindow() {
     setChatInput('');
   };
 
+  const focusCharacterWorld = () => {
+    window.dispatchEvent(new CustomEvent('deskmate:focus-world'));
+    document.querySelector<HTMLElement>('.overlay-stage-container')?.focus();
+  };
+
   const handleSendGameCommand = (cmd: string) => {
     if (!user || !currentRoom || !socketRef.current) return;
     socketRef.current.emit('sendMessage', {
@@ -442,6 +429,7 @@ export default function MainWindow() {
       nickname: user.nickname,
       message: cmd,
     });
+    focusCharacterWorld();
   };
 
   const handleTriggerEmote = (emoteType: EmoteType) => {
@@ -451,17 +439,7 @@ export default function MainWindow() {
       userId: user.userId,
       emoteType,
     });
-  };
-
-  const handleChangeStatusBadge = (nextStatus: StatusBadgeType) => {
-    setMyStatusBadge(nextStatus);
-    if (user && currentRoom && socketRef.current) {
-      socketRef.current.emit('updateStatus', {
-        roomId: currentRoom.roomId,
-        userId: user.userId,
-        statusBadge: nextStatus,
-      });
-    }
+    focusCharacterWorld();
   };
 
   const handlePomodoroControl = (
@@ -473,6 +451,7 @@ export default function MainWindow() {
       action,
       nickname: user.nickname,
     });
+    focusCharacterWorld();
   };
 
   const handleCopyInviteCode = () => {
@@ -480,6 +459,7 @@ export default function MainWindow() {
     navigator.clipboard?.writeText(currentRoom.inviteCode);
     setCopiedCode(true);
     setTimeout(() => setCopiedCode(false), 1800);
+    focusCharacterWorld();
   };
 
   const handleLeaveRoom = async () => {
@@ -493,11 +473,6 @@ export default function MainWindow() {
     }
 
     window.electronAPI?.leaveRoom();
-    if (!window.electronAPI) {
-      fetch('http://127.0.0.1:45678/leave-room', { method: 'POST' }).catch(
-        () => {}
-      );
-    }
     setCurrentRoom(null);
     setRoomUsers({});
     await fetchRoomList();
@@ -513,25 +488,21 @@ export default function MainWindow() {
   };
 
   return (
-    <div className="main-window-shell">
+    <div
+      className={
+        step === 'CHAT_ROOM'
+          ? 'main-window-shell split-room-mode'
+          : 'main-window-shell'
+      }
+    >
       {/* 상단 헤더 & 글로벌 유틸리티 바 */}
       <header className="main-header">
         <div>
           <h1 className="brand-title">DeskMate</h1>
-          <p className="brand-subtitle">바탕화면 멀티플레이어 Rive 캐릭터 채팅</p>
+          <p className="brand-subtitle">멀티플레이어 Rive 캐릭터 코워킹 & 채팅</p>
         </div>
 
         <div className="header-actions">
-          {!window.electronAPI && (
-            <a
-              href="deskmate://open"
-              className="icon-pill-btn dnd-on"
-              style={{ textDecoration: 'none' }}
-              title="DeskMate Windows 데스크톱(Electron) 앱으로 열기"
-            >
-              🚀 Electron 앱 열기
-            </a>
-          )}
           <button
             type="button"
             className={isMuted ? 'icon-pill-btn off' : 'icon-pill-btn'}
@@ -544,7 +515,12 @@ export default function MainWindow() {
             type="button"
             className={isDndMode ? 'icon-pill-btn dnd-on' : 'icon-pill-btn'}
             title="방해 금지 모드 (말풍선/알림음 차단)"
-            onClick={() => window.electronAPI?.toggleDndMode()}
+            onClick={() => {
+              const next = !isDndMode;
+              setIsDndMode(next);
+              sound.setDnd(next);
+              window.electronAPI?.toggleDndMode();
+            }}
           >
             {isDndMode ? '🌙 방해금지 ON' : '🌙 방해금지'}
           </button>
@@ -732,7 +708,18 @@ export default function MainWindow() {
                 </span>
               </div>
             </div>
-            <div style={{ display: 'flex', gap: '5px' }}>
+            <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="ghost-btn"
+                onClick={() => {
+                  setErrorMsg(null);
+                  setEditNicknameInput(user.nickname);
+                  setIsEditingNickname((prev) => !prev);
+                }}
+              >
+                닉네임 변경
+              </button>
               <button
                 type="button"
                 className="ghost-btn"
@@ -753,6 +740,44 @@ export default function MainWindow() {
               </button>
             </div>
           </div>
+
+          {/* 닉네임 변경 입력 폼 (중복 불가) */}
+          {isEditingNickname && (
+            <form onSubmit={handleUpdateNickname} className="nickname-edit-box">
+              <div className="nickname-edit-title">
+                ✏️ 새 닉네임 입력 (중복 불가)
+              </div>
+              <div className="room-create-row">
+                <input
+                  type="text"
+                  className="text-input"
+                  placeholder="변경할 새 닉네임 입력"
+                  value={editNicknameInput}
+                  onChange={(e) => setEditNicknameInput(e.target.value)}
+                  maxLength={20}
+                  autoFocus
+                  required
+                />
+                <button
+                  type="submit"
+                  className="primary-btn small"
+                  disabled={loading}
+                >
+                  {loading ? '저장 중...' : '저장'}
+                </button>
+                <button
+                  type="button"
+                  className="ghost-btn"
+                  onClick={() => {
+                    setIsEditingNickname(false);
+                    setErrorMsg(null);
+                  }}
+                >
+                  취소
+                </button>
+              </div>
+            </form>
+          )}
 
           {/* 새 방 생성 */}
           <form onSubmit={handleCreateRoom} className="room-create-stack">
@@ -895,28 +920,8 @@ export default function MainWindow() {
             </button>
           </div>
 
-          {/* 코워킹 상태 배지 선택 & 공유 포모도로 타이머 */}
+          {/* 공유 포모도로 타이머 */}
           <div className="cowork-panel">
-            <div className="status-selector-row">
-              <span className="cowork-label">내 상태:</span>
-              <div className="status-pill-list">
-                {STATUS_BADGE_OPTIONS.map((st) => (
-                  <button
-                    key={st.type}
-                    type="button"
-                    className={
-                      myStatusBadge === st.type
-                        ? 'status-pill active'
-                        : 'status-pill'
-                    }
-                    onClick={() => handleChangeStatusBadge(st.type)}
-                  >
-                    {st.emoji} {st.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
             <div className="pomodoro-bar">
               <div className="pomodoro-info">
                 <span className="pomodoro-mode-tag">
@@ -995,111 +1000,28 @@ export default function MainWindow() {
             </div>
           </div>
 
-          {/* 웹 브라우저(Vercel 등 Electron이 없는 환경)에서 접속 시 내장 Rive 캐릭터 오버레이 스테이지 및 Windows 바탕화면 실행 버튼 표시 */}
-          {!window.electronAPI && user.characterType && (
-            <div className="web-embedded-overlay-stage">
+          {/* 대화방 전체 화면 캐릭터 월드 (우측 채팅방 제거 & 전체 화면 확장) */}
+          <div className="chat-room-split-body">
+            <div className="split-left-stage">
               <div className="web-stage-top-bar">
                 <span className="web-stage-badge">
-                  🖥️ 웹 미리보기 스테이지 (캐릭터 드래그 가능)
+                  🎮 캐릭터 월드 (방향키 ↑↓←→ 이동 · 내 캐릭터 아래 [💬 스페이스바] 또는 Space 키로 채팅 입력)
                 </span>
-                <a
-                  className="launch-desktop-overlay-btn"
-                  href={`deskmate://enter-room?roomId=${encodeURIComponent(
-                    currentRoom.roomId
-                  )}&roomName=${encodeURIComponent(
-                    currentRoom.roomName
-                  )}&userId=${encodeURIComponent(
-                    user.userId
-                  )}&nickname=${encodeURIComponent(
-                    user.nickname
-                  )}&characterType=${encodeURIComponent(
-                    user.characterType
-                  )}&statusBadge=${encodeURIComponent(myStatusBadge)}`}
-                  onClick={() => {
-                    fetch('http://127.0.0.1:45678/enter-room', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({
-                        roomId: currentRoom.roomId,
-                        roomName: currentRoom.roomName,
-                        userId: user.userId,
-                        nickname: user.nickname,
-                        characterType: user.characterType,
-                        statusBadge: myStatusBadge,
-                      }),
-                    }).catch(() => {});
-                  }}
-                >
-                  🚀 Windows 바탕화면에 캐릭터 띄우기
-                </a>
               </div>
-              <OverlayWindow
-                embeddedRoomData={{
-                  roomId: currentRoom.roomId,
-                  roomName: currentRoom.roomName,
-                  userId: user.userId,
-                  nickname: user.nickname,
-                  characterType: user.characterType,
-                  statusBadge: myStatusBadge,
-                }}
-              />
+              {user.characterType && (
+                <OverlayWindow
+                  embeddedRoomData={{
+                    roomId: currentRoom.roomId,
+                    roomName: currentRoom.roomName,
+                    userId: user.userId,
+                    nickname: user.nickname,
+                    characterType: user.characterType,
+                    statusBadge: myStatusBadge,
+                  }}
+                />
+              )}
             </div>
-          )}
-
-          {/* 실시간 채팅 메시지 영역 */}
-          <div className="chat-messages">
-            {messages.length === 0 ? (
-              <p className="empty-chat">
-                아직 대화가 없습니다. 첫 메시지나 🎲 주사위를 굴려보세요!
-              </p>
-            ) : (
-              messages.map((m) => {
-                if (m.messageType === 'system') {
-                  return (
-                    <div key={m.id} className="chat-system-notice">
-                      {m.message}
-                    </div>
-                  );
-                }
-
-                const isMine = m.userId === user.userId;
-                const isGame = m.messageType === 'game';
-                return (
-                  <div
-                    key={m.id}
-                    className={isMine ? 'chat-item mine' : 'chat-item'}
-                  >
-                    <div className="chat-meta">
-                      <strong>{m.nickname}</strong>
-                      <span>{m.timestamp}</span>
-                    </div>
-                    <div
-                      className={
-                        isGame ? 'chat-bubble-box game' : 'chat-bubble-box'
-                      }
-                    >
-                      {m.message}
-                    </div>
-                  </div>
-                );
-              })
-            )}
-            <div ref={chatBottomRef} />
           </div>
-
-          {/* 채팅 입력 바 */}
-          <form onSubmit={handleSendMessage} className="chat-input-row">
-            <input
-              type="text"
-              className="text-input"
-              placeholder="메시지 또는 /주사위, /가위바위보 입력..."
-              value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
-            />
-            <button type="submit" className="primary-btn small">
-              전송
-            </button>
-          </form>
         </section>
       )}
     </div>

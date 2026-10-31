@@ -378,7 +378,8 @@ body,
   gap: 6px;
 }
 
-.secret-room-box {
+.secret-room-box,
+.nickname-edit-box {
   background: #fffbeb;
   border: 1px solid #fde68a;
   padding: 10px;
@@ -386,6 +387,17 @@ body,
   display: flex;
   flex-direction: column;
   gap: 7px;
+}
+
+.nickname-edit-box {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+}
+
+.nickname-edit-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #3730a3;
 }
 
 .secret-room-title {
@@ -517,8 +529,6 @@ body,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding-top: 5px;
-  border-top: 1px dashed #cbd5e1;
   gap: 6px;
 }
 
@@ -587,16 +597,48 @@ body,
   cursor: pointer;
 }
 
-.web-embedded-overlay-stage {
-  position: relative;
+/* 대화방 전체 화면 캐릭터 월드 (100% 확장) */
+.chat-room-split-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
   width: 100%;
-  height: 220px;
-  min-height: 200px;
+  height: 100%;
+  min-height: 440px;
+}
+
+.split-left-stage {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  min-height: 440px;
   border-radius: 14px;
   background: linear-gradient(180deg, #dbeafe 0%, #e0e7ff 72%, #cbd5e1 100%);
   border: 1.5px solid #c7d2fe;
   overflow: hidden;
   box-shadow: inset 0 2px 8px rgba(15, 23, 42, 0.06);
+  user-select: none;
+}
+
+.character-chat-open-btn {
+  margin-top: 5px;
+  background: #4f46e5;
+  color: #ffffff;
+  border: 1.5px solid #ffffff;
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 3px 8px rgba(79, 70, 229, 0.4);
+  transition: transform 0.12s, background 0.12s;
+}
+
+.character-chat-open-btn:hover {
+  background: #4338ca;
+  transform: scale(1.05);
 }
 
 .web-stage-top-bar {
@@ -619,23 +661,6 @@ body,
   padding: 3px 8px;
   border-radius: 999px;
   pointer-events: none;
-}
-
-.launch-desktop-overlay-btn {
-  pointer-events: auto;
-  text-decoration: none;
-  font-size: 11px;
-  font-weight: 800;
-  background: #4f46e5;
-  color: #ffffff;
-  padding: 4px 10px;
-  border-radius: 999px;
-  box-shadow: 0 2px 6px rgba(79, 70, 229, 0.35);
-  cursor: pointer;
-}
-
-.launch-desktop-overlay-btn:hover {
-  background: #4338ca;
 }
 
 .chat-messages {
@@ -1012,5 +1037,96 @@ body,
   100% {
     transform: translateY(0px);
     opacity: 1;
+  }
+}
+
+/* 모바일 전용 캐릭터 월드 컨트롤 (기본 PC에서는 숨김, 모바일/터치 환경에서 표시) */
+.mobile-world-controls {
+  display: none;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 60;
+}
+
+.mobile-dpad-container {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  pointer-events: auto;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+
+.mobile-dpad-row {
+  display: flex;
+  gap: 6px;
+}
+
+.mobile-dpad-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: transparent;
+  border: 1.5px solid rgba(15, 23, 42, 0.28);
+  color: rgba(15, 23, 42, 0.65);
+  font-size: 16px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  transition: background 0.12s ease, transform 0.08s ease;
+}
+
+.mobile-dpad-btn:active {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(79, 70, 229, 0.55);
+  color: rgba(79, 70, 229, 0.9);
+  transform: scale(0.95);
+}
+
+.mobile-chat-btn {
+  position: absolute;
+  right: 14px;
+  bottom: 18px;
+  padding: 11px 16px;
+  border-radius: 999px;
+  background: transparent;
+  border: 1.5px solid rgba(15, 23, 42, 0.28);
+  color: rgba(15, 23, 42, 0.72);
+  font-size: 13.5px;
+  font-weight: 800;
+  pointer-events: auto;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+  transition: background 0.12s ease, transform 0.08s ease;
+}
+
+.mobile-chat-btn:active {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(79, 70, 229, 0.55);
+  color: rgba(79, 70, 229, 0.9);
+  transform: scale(0.96);
+}
+
+@media (max-width: 768px), (hover: none) and (pointer: coarse) {
+  .mobile-world-controls {
+    display: block;
+  }
+
+  .overlay-quickchat-container {
+    min-width: 250px;
+    max-width: calc(100vw - 32px);
   }
 }

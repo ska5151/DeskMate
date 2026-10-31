@@ -42,16 +42,18 @@ export default function OverlayWindow({
     {}
   );
   const [bubbles, setBubbles] = useState<
-    Record<string, { text: string; isGame?: boolean; gameBadge?: string }>
+    Record<string, { text: string }>
+  >({});
+  const [gameBubbles, setGameBubbles] = useState<
+    Record<string, { text: string; gameBadge?: string }>
   >({});
   const [emoteBadges, setEmoteBadges] = useState<Record<string, string>>({});
   const [activeEmotes, setActiveEmotes] = useState<
     Record<string, EmoteType | null>
   >({});
 
-  // 드래그 및 중력 물리 상태
-  const [draggingUserId, setDraggingUserId] = useState<string | null>(null);
-  const [fallingUsers, setFallingUsers] = useState<Record<string, boolean>>({});
+  // 캐릭터 월드 창 선택(포커스) 여부
+  const [isWorldFocused, setIsWorldFocused] = useState<boolean>(false);
 
   // 타 유저 클릭 시 상호작용 팝업 대상 userId
   const [interactionTargetId, setInteractionTargetId] = useState<string | null>(
@@ -66,6 +68,8 @@ export default function OverlayWindow({
   const [pomodoro, setPomodoro] = useState<PomodoroState | null>(null);
   const [isDndMode, setIsDndMode] = useState(false);
 
+  const stageContainerRef = useRef<HTMLDivElement | null>(null);
+  const pressedKeysRef = useRef<Set<string>>(new Set());
   const socketRef = useRef<Socket | null>(null);
   const quickInputRef = useRef<HTMLInputElement | null>(null);
   const myInfoRef = useRef<RoomOverlayInitData | null>(null);
@@ -107,6 +111,9 @@ export default function OverlayWindow({
     setQuickChatOpen(false);
     setQuickChatText('');
     window.electronAPI?.setOverlayFocusable(false);
+    setTimeout(() => {
+      stageContainerRef.current?.focus();
+    }, 30);
   };
 
   useEffect(() => {
@@ -167,6 +174,7 @@ export default function OverlayWindow({
       setMyInfo(null);
       setCharacters({});
       setBubbles({});
+      setGameBubbles({});
       setEmoteBadges({});
       setActiveEmotes({});
       setInteractionTargetId(null);
@@ -264,37 +272,59 @@ export default function OverlayWindow({
       setPomodoro(pomo);
     });
 
-    // 채팅 및 미니게임 메시지 수신 -> 머리 위 말풍선 표시 (4.5초 후 제거)
+    // 방 입장 시 최근 히스토리에서 각 유저의 마지막 직접 입력 채팅 말풍선만 복원 (미니게임 결과는 제외)
+    socket.on('roomHistory', (history: ChatMessage[]) => {
+      if (!Array.isArray(history)) return;
+      const latestByUser: Record<string, { text: string }> = {};
+      history.forEach((m) => {
+        if (
+          m.userId &&
+          m.userId !== 'system' &&
+          m.messageType !== 'system' &&
+          m.messageType !== 'game'
+        ) {
+          latestByUser[m.userId] = {
+            text: m.message,
+          };
+        }
+      });
+      setBubbles((prev) => ({ ...latestByUser, ...prev }));
+    });
+
+    // 채팅 및 미니게임 메시지 수신 -> 주사위/가위바위보(game)는 3초 뒤 소멸, 직접 입력 채팅은 계속 유지!
     socket.on('receiveMessage', (msg: ChatMessage) => {
-      if (isDndRef.current || msg.userId === 'system') return;
+      if (isDndRef.current || msg.userId === 'system' || msg.messageType === 'system') return;
 
       const senderChar = charactersRef.current[msg.userId];
       if (msg.messageType === 'game') {
         sound.playGameSound();
+        setGameBubbles((prev) => ({
+          ...prev,
+          [msg.userId]: {
+            text: msg.message,
+            gameBadge: msg.gameResult?.badge,
+          },
+        }));
+
+        if (bubbleTimersRef.current[msg.userId]) {
+          clearTimeout(bubbleTimersRef.current[msg.userId]);
+        }
+        bubbleTimersRef.current[msg.userId] = setTimeout(() => {
+          setGameBubbles((prev) => {
+            const next = { ...prev };
+            delete next[msg.userId];
+            return next;
+          });
+        }, 3000);
       } else {
         sound.playBubblePop(senderChar?.characterType);
+        setBubbles((prev) => ({
+          ...prev,
+          [msg.userId]: {
+            text: msg.message,
+          },
+        }));
       }
-
-      setBubbles((prev) => ({
-        ...prev,
-        [msg.userId]: {
-          text: msg.message,
-          isGame: msg.messageType === 'game',
-          gameBadge: msg.gameResult?.badge,
-        },
-      }));
-
-      if (bubbleTimersRef.current[msg.userId]) {
-        clearTimeout(bubbleTimersRef.current[msg.userId]);
-      }
-
-      bubbleTimersRef.current[msg.userId] = setTimeout(() => {
-        setBubbles((prev) => {
-          const next = { ...prev };
-          delete next[msg.userId];
-          return next;
-        });
-      }, 4500);
     });
 
     return () => {
@@ -312,187 +342,204 @@ export default function OverlayWindow({
     };
   }, []);
 
-  // =========================================================
-  // 중력 & 작업표시줄 바운스 착지 물리 엔진
-  // =========================================================
-  const startGravityDrop = (userId: string, startX: number, startY: number) => {
-    if (startY >= GROUND_Y) return;
-
-    setFallingUsers((prev) => ({ ...prev, [userId]: true }));
-    let currentY = startY;
-    let velocityY = 0;
-    const gravity = 0.26;
-    const bounceFactor = -0.42;
-    let bounceCount = 0;
-
-    const stepPhysics = () => {
-      velocityY += gravity;
-      currentY += velocityY;
-
-      if (currentY >= GROUND_Y) {
-        currentY = GROUND_Y;
-        if (Math.abs(velocityY) > 1.1 && bounceCount < 2) {
-          velocityY = velocityY * bounceFactor;
-          bounceCount += 1;
-          sound.playBounceSound();
-        } else {
-          // 바닥 착지 완료
-          setFallingUsers((prev) => ({ ...prev, [userId]: false }));
-          setCharacters((prev) => {
-            const target = prev[userId];
-            if (!target) return prev;
-            const landed: CharacterState = {
-              ...target,
-              x: Number(startX.toFixed(2)),
-              y: GROUND_Y,
-              state: 'idle',
-            };
-            if (myInfoRef.current) {
-              socketRef.current?.emit('moveCharacter', {
-                roomId: myInfoRef.current.roomId,
-                ...landed,
-              });
-            }
-            return { ...prev, [userId]: landed };
-          });
-          return;
-        }
-      }
-
-      setCharacters((prev) => {
-        const target = prev[userId];
-        if (!target) return prev;
-        return {
-          ...prev,
-          [userId]: {
-            ...target,
-            y: Number(currentY.toFixed(2)),
-          },
-        };
+  const stopWalkingToIdle = () => {
+    if (!myInfo) return;
+    const uid = myInfo.userId;
+    setCharacters((prev) => {
+      const me = prev[uid];
+      if (!me || me.state === 'idle') return prev;
+      const stoppedMe: CharacterState = {
+        ...me,
+        state: 'idle',
+      };
+      socketRef.current?.emit('moveCharacter', {
+        roomId: myInfo.roomId,
+        ...stoppedMe,
       });
-
-      physicsFrameRef.current = requestAnimationFrame(stepPhysics);
-    };
-
-    if (physicsFrameRef.current) {
-      cancelAnimationFrame(physicsFrameRef.current);
-    }
-    physicsFrameRef.current = requestAnimationFrame(stepPhysics);
+      return { ...prev, [uid]: stoppedMe };
+    });
   };
 
-  // 내 캐릭터 자동 배회(Random Walk) 로직
-  useEffect(() => {
-    if (!myInfo) return;
+  const handleDirectionPressStart = (
+    dirKey: 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight',
+    e: React.TouchEvent | React.MouseEvent
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!myInfo || quickChatOpen) return;
 
-    const interval = setInterval(() => {
-      // 드래그 중이거나 낙하 중이거나 잠자기(sleep) 이모트 중이면 자동 배회 일시 정지
-      if (
-        draggingUserId === myInfo.userId ||
-        fallingUsers[myInfo.userId] ||
-        activeEmotes[myInfo.userId] === 'sleep'
-      ) {
-        return;
+    stageContainerRef.current?.focus();
+    setIsWorldFocused(true);
+
+    if (activeEmotes[myInfo.userId] === 'sleep') {
+      setActiveEmotes((prev) => ({ ...prev, [myInfo.userId]: null }));
+      setEmoteBadges((prev) => {
+        const next = { ...prev };
+        delete next[myInfo.userId];
+        return next;
+      });
+    }
+
+    pressedKeysRef.current.add(dirKey);
+  };
+
+  const handleDirectionPressEnd = (
+    dirKey: 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight',
+    e?: React.TouchEvent | React.MouseEvent
+  ) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    pressedKeysRef.current.delete(dirKey);
+    if (pressedKeysRef.current.size === 0) {
+      stopWalkingToIdle();
+    }
+  };
+
+  // 캐릭터 월드 창 선택(포커스) 또는 모바일 터치 방향키(↑, ↓, ←, →)로 이동 및 걷기 모션(walk) 적용
+  useEffect(() => {
+    if (!myInfo || quickChatOpen) {
+      pressedKeysRef.current.clear();
+      return;
+    }
+
+    const ARROW_KEYS = new Set([
+      'ArrowUp',
+      'ArrowDown',
+      'ArrowLeft',
+      'ArrowRight',
+    ]);
+    const STEP_SPEED = 1.35; // 틱당 이동량 (%)
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!isWorldFocused) return;
+      // 입력창(input/textarea) 포커스 중에는 방향키 캐릭터 이동 무시
+      const activeTag = document.activeElement?.tagName.toLowerCase();
+      if (activeTag === 'input' || activeTag === 'textarea') return;
+
+      if (!ARROW_KEYS.has(e.key)) return;
+      e.preventDefault();
+
+      // 잠자기(sleep) 상태였다면 깨우기
+      if (activeEmotes[myInfo.userId] === 'sleep') {
+        setActiveEmotes((prev) => ({ ...prev, [myInfo.userId]: null }));
+        setEmoteBadges((prev) => {
+          const next = { ...prev };
+          delete next[myInfo.userId];
+          return next;
+        });
+      }
+
+      pressedKeysRef.current.add(e.key);
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (!ARROW_KEYS.has(e.key)) return;
+      e.preventDefault();
+      pressedKeysRef.current.delete(e.key);
+
+      if (pressedKeysRef.current.size === 0) {
+        stopWalkingToIdle();
+      }
+    };
+
+    const moveInterval = setInterval(() => {
+      if (pressedKeysRef.current.size === 0) return;
+
+      let dx = 0;
+      let dy = 0;
+      if (pressedKeysRef.current.has('ArrowLeft')) dx -= STEP_SPEED;
+      if (pressedKeysRef.current.has('ArrowRight')) dx += STEP_SPEED;
+      if (pressedKeysRef.current.has('ArrowUp')) dy -= STEP_SPEED;
+      if (pressedKeysRef.current.has('ArrowDown')) dy += STEP_SPEED;
+
+      if (dx === 0 && dy === 0) return;
+
+      // 대각선 이동 시 속도 정규화
+      if (dx !== 0 && dy !== 0) {
+        dx *= 0.7071;
+        dy *= 0.7071;
       }
 
       setCharacters((prev) => {
         const me = prev[myInfo.userId];
         if (!me) return prev;
 
-        if (Math.random() < 0.32) {
-          const idleMe: CharacterState = { ...me, state: 'idle' };
-          socketRef.current?.emit('moveCharacter', {
-            roomId: myInfo.roomId,
-            ...idleMe,
-          });
-          return { ...prev, [myInfo.userId]: idleMe };
-        }
+        const nextX = Math.max(6, Math.min(94, me.x + dx));
+        const nextY = Math.max(18, Math.min(95, me.y + dy));
+        const direction =
+          dx < 0 ? 'left' : dx > 0 ? 'right' : me.direction;
 
-        const deltaX = (Math.random() - 0.5) * 18;
-        const nextX = Math.max(6, Math.min(94, me.x + deltaX));
-        const direction = deltaX >= 0 ? 'right' : 'left';
-
-        const updatedMe: CharacterState = {
+        const walkingMe: CharacterState = {
           ...me,
-          x: Number(nextX.toFixed(2)),
-          y: GROUND_Y,
-          direction,
-          state: 'walk',
-        };
-
-        socketRef.current?.emit('moveCharacter', {
-          roomId: myInfo.roomId,
-          ...updatedMe,
-        });
-
-        return { ...prev, [myInfo.userId]: updatedMe };
-      });
-    }, 3300);
-
-    return () => clearInterval(interval);
-  }, [myInfo, draggingUserId, fallingUsers, activeEmotes]);
-
-  // 마우스로 내 캐릭터를 드래그하여 옮기고 놓았을 때 중력 착지 실행
-  useEffect(() => {
-    if (!draggingUserId || !myInfo) return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const nextX = Math.max(
-        5,
-        Math.min(95, (e.clientX / window.innerWidth) * 100)
-      );
-      const nextY = Math.max(
-        10,
-        Math.min(GROUND_Y, (e.clientY / window.innerHeight) * 100)
-      );
-
-      setCharacters((prev) => {
-        const target = prev[draggingUserId];
-        if (!target) return prev;
-
-        const direction = nextX >= target.x ? 'right' : 'left';
-        const updated: CharacterState = {
-          ...target,
           x: Number(nextX.toFixed(2)),
           y: Number(nextY.toFixed(2)),
           direction,
-          state: 'walk',
+          state: 'walk', // 방향키 이동 중 움직이는 걷기 모션!
         };
 
         socketRef.current?.emit('moveCharacter', {
           roomId: myInfo.roomId,
-          ...updated,
+          ...walkingMe,
         });
 
-        return { ...prev, [draggingUserId]: updated };
+        return { ...prev, [myInfo.userId]: walkingMe };
       });
-    };
+    }, 36);
 
-    const handleMouseUp = () => {
-      const currentChar = charactersRef.current[draggingUserId];
-      setDraggingUserId(null);
-      if (!quickChatOpen) {
-        window.electronAPI?.setIgnoreMouse(true);
-      }
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
 
-      // 높은 곳에서 놓았다면 중력 낙하 물리 효과 발동!
-      if (currentChar && currentChar.y < GROUND_Y) {
-        startGravityDrop(draggingUserId, currentChar.x, currentChar.y);
-      }
-    };
-
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
     return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
+      clearInterval(moveInterval);
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      pressedKeysRef.current.clear();
+      stopWalkingToIdle();
     };
-  }, [draggingUserId, myInfo, quickChatOpen]);
+  }, [myInfo, isWorldFocused, quickChatOpen, activeEmotes]);
 
-  // 오버레이 내 단축키(Alt+1~5 이모트, Esc 닫기)
+  // 상단 바 버튼 클릭 시 또는 방 입장 시 자동으로 캐릭터 월드 포커스하여 방향키 이동 가능하도록 처리
+  useEffect(() => {
+    const focusStage = () => {
+      setQuickChatOpen(false);
+      setQuickChatText('');
+      setTimeout(() => {
+        stageContainerRef.current?.focus();
+        setIsWorldFocused(true);
+      }, 10);
+    };
+
+    if (embeddedRoomData) {
+      focusStage();
+    }
+
+    window.addEventListener('deskmate:focus-world', focusStage);
+    return () => window.removeEventListener('deskmate:focus-world', focusStage);
+  }, [embeddedRoomData]);
+
+  // 오버레이 내 단축키(스페이스바 채팅 입력란 열기, Alt+1~5 이모트, Esc 닫기)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && quickChatOpen) {
         closeQuickChatBar();
+        return;
+      }
+
+      const activeTag = document.activeElement?.tagName.toLowerCase();
+      const isTypingInInput =
+        activeTag === 'input' || activeTag === 'textarea';
+
+      // 스페이스바 입력 시 채팅 입력란(Quick Chat) 열기
+      if (
+        (e.code === 'Space' || e.key === ' ') &&
+        !quickChatOpen &&
+        !isTypingInInput &&
+        myInfo
+      ) {
+        e.preventDefault();
+        openQuickChatBar();
         return;
       }
 
@@ -532,27 +579,6 @@ export default function OverlayWindow({
     closeQuickChatBar();
   };
 
-  // Quick Chat에서 즉시 이모트 또는 미니게임 발송
-  const handleQuickEmote = (emoteType: EmoteType) => {
-    if (!myInfo) return;
-    socketRef.current?.emit('triggerEmote', {
-      roomId: myInfo.roomId,
-      userId: myInfo.userId,
-      emoteType,
-    });
-  };
-
-  const handleQuickCommand = (cmd: string) => {
-    if (!myInfo) return;
-    socketRef.current?.emit('sendMessage', {
-      roomId: myInfo.roomId,
-      userId: myInfo.userId,
-      nickname: myInfo.nickname,
-      message: cmd,
-    });
-    closeQuickChatBar();
-  };
-
   // 타 유저 상호작용 발송
   const handleSendInteraction = (
     targetChar: CharacterState,
@@ -583,12 +609,24 @@ export default function OverlayWindow({
 
   return (
     <div
+      ref={stageContainerRef}
+      className="overlay-stage-container"
+      tabIndex={0}
+      onFocus={() => setIsWorldFocused(true)}
+      onBlur={() => setIsWorldFocused(false)}
+      onMouseDown={() => {
+        stageContainerRef.current?.focus();
+      }}
       style={{
         width: embeddedRoomData ? '100%' : '100vw',
         height: embeddedRoomData ? '100%' : '100vh',
         position: 'relative',
         overflow: 'hidden',
         background: 'transparent',
+        outline: isWorldFocused ? '3px solid #4f46e5' : 'none',
+        outlineOffset: '-3px',
+        borderRadius: embeddedRoomData ? '12px' : '0px',
+        cursor: 'pointer',
       }}
     >
       {/* 상단 공유 포모도로 타이머 미니 HUD (실행 중일 때 표시) */}
@@ -602,9 +640,8 @@ export default function OverlayWindow({
       {/* 캐릭터 렌더링 */}
       {Object.values(characters).map((char) => {
         const isMe = myInfo?.userId === char.userId;
-        const isDragging = draggingUserId === char.userId;
-        const isFalling = Boolean(fallingUsers[char.userId]);
-        const bubbleData = bubbles[char.userId];
+        const gameBubbleData = gameBubbles[char.userId];
+        const chatBubbleData = bubbles[char.userId];
         const emoteBadge = emoteBadges[char.userId];
         const currentEmote = activeEmotes[char.userId] || null;
         const statusInfo = getStatusBadgeDisplay(char.statusBadge);
@@ -614,24 +651,14 @@ export default function OverlayWindow({
             key={char.userId}
             onMouseEnter={() => window.electronAPI?.setIgnoreMouse(false)}
             onMouseLeave={() => {
-              if (!isDragging && !quickChatOpen && !interactionTargetId) {
+              if (!quickChatOpen && !interactionTargetId) {
                 window.electronAPI?.setIgnoreMouse(true);
               }
             }}
             onMouseDown={(e) => {
               e.stopPropagation();
-              if (isMe) {
-                // 잠자기 상태였다면 깨우기
-                if (activeEmotes[char.userId] === 'sleep') {
-                  setActiveEmotes((prev) => ({ ...prev, [char.userId]: null }));
-                  setEmoteBadges((prev) => {
-                    const next = { ...prev };
-                    delete next[char.userId];
-                    return next;
-                  });
-                }
-                setDraggingUserId(char.userId);
-              } else {
+              stageContainerRef.current?.focus();
+              if (!isMe) {
                 // 다른 유저 클릭 시 상호작용 팝업 메뉴 토글
                 setInteractionTargetId((prev) =>
                   prev === char.userId ? null : char.userId
@@ -649,14 +676,11 @@ export default function OverlayWindow({
               left: `${char.x}%`,
               top: `${char.y}%`,
               transform: 'translate(-50%, -100%)',
-              transition:
-                isDragging || isFalling
-                  ? 'none'
-                  : 'left 2.4s linear, top 2.4s linear',
+              transition: isMe ? 'none' : 'left 0.08s linear, top 0.08s linear',
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'center',
-              cursor: isMe ? 'grab' : 'pointer',
+              cursor: 'pointer',
               zIndex: isMe ? 30 : 20,
             }}
           >
@@ -692,21 +716,22 @@ export default function OverlayWindow({
               <div className="overlay-emote-badge">{emoteBadge}</div>
             )}
 
-            {/* 실시간 채팅 & 미니게임 말풍선 */}
-            {bubbleData && (
-              <div
-                className={
-                  bubbleData.isGame
-                    ? 'overlay-speech-bubble game-bubble'
-                    : 'overlay-speech-bubble'
-                }
-              >
-                {bubbleData.gameBadge && (
+            {/* 주사위·가위바위보 미니게임 결과 말풍선 (3초 뒤 자동 소멸) */}
+            {gameBubbleData && (
+              <div className="overlay-speech-bubble game-bubble">
+                {gameBubbleData.gameBadge && (
                   <div className="game-result-highlight">
-                    {bubbleData.gameBadge}
+                    {gameBubbleData.gameBadge}
                   </div>
                 )}
-                <div>{bubbleData.text}</div>
+                <div>{gameBubbleData.text}</div>
+              </div>
+            )}
+
+            {/* 직접 입력한 실시간 채팅 말풍선 (지속 유지) */}
+            {!gameBubbleData && chatBubbleData && (
+              <div className="overlay-speech-bubble">
+                <div>{chatBubbleData.text}</div>
               </div>
             )}
 
@@ -727,50 +752,36 @@ export default function OverlayWindow({
                 {isMe ? ' (나)' : ''}
               </span>
             </div>
+
+            {/* 내 캐릭터 닉네임 하단 [💬 스페이스바] 버튼 (스페이스바 키 또는 클릭 시 빠른 채팅 항목 표시) */}
+            {isMe && (
+              <button
+                type="button"
+                className="character-chat-open-btn"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openQuickChatBar();
+                }}
+              >
+                💬 스페이스바
+              </button>
+            )}
           </div>
         );
       })}
 
-      {/* 바탕화면 위 미니 채팅 입력바 (Quick Chat: 내 캐릭터 더블클릭 또는 Alt+Enter) */}
+      {/* 바탕화면 위 미니 채팅 입력바 (Quick Chat: 내 캐릭터 하단 [채팅 입력] 버튼, 더블클릭 또는 Alt+Enter) */}
       {quickChatOpen && myCharacter && (
         <div
           className="overlay-quickchat-container"
           onMouseEnter={() => window.electronAPI?.setIgnoreMouse(false)}
+          onMouseDown={(e) => e.stopPropagation()}
           style={{
-            left: `${Math.max(18, Math.min(82, myCharacter.x))}%`,
-            top: `${Math.min(92, myCharacter.y + 2)}%`,
+            left: `${Math.max(20, Math.min(80, myCharacter.x))}%`,
+            top: `${Math.max(15, Math.min(76, myCharacter.y + 2))}%`,
           }}
         >
-          <div className="quickchat-action-strip">
-            {EMOTE_OPTIONS.map((em) => (
-              <button
-                key={em.type}
-                type="button"
-                className="quickchat-mini-btn"
-                title={`${em.label} (${em.shortcut})`}
-                onClick={() => handleQuickEmote(em.type)}
-              >
-                {em.emoji}
-              </button>
-            ))}
-            <button
-              type="button"
-              className="quickchat-mini-btn game"
-              title="주사위 굴리기 (/주사위)"
-              onClick={() => handleQuickCommand('/주사위')}
-            >
-              🎲
-            </button>
-            <button
-              type="button"
-              className="quickchat-mini-btn game"
-              title="가위바위보 (/가위바위보)"
-              onClick={() => handleQuickCommand('/가위바위보')}
-            >
-              ✌️
-            </button>
-          </div>
-
           <form onSubmit={handleQuickChatSubmit} className="quickchat-form">
             <input
               ref={quickInputRef}
@@ -791,6 +802,84 @@ export default function OverlayWindow({
               ✕
             </button>
           </form>
+        </div>
+      )}
+
+      {/* 모바일 버전 전용: 좌측 하단 투명 방향키 & 우측 하단 투명 채팅 버튼 */}
+      {myInfo && (
+        <div
+          className="mobile-world-controls"
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="mobile-dpad-container">
+            <div className="mobile-dpad-row">
+              <button
+                type="button"
+                className="mobile-dpad-btn"
+                aria-label="위로 이동"
+                onTouchStart={(e) => handleDirectionPressStart('ArrowUp', e)}
+                onTouchEnd={(e) => handleDirectionPressEnd('ArrowUp', e)}
+                onTouchCancel={(e) => handleDirectionPressEnd('ArrowUp', e)}
+                onMouseDown={(e) => handleDirectionPressStart('ArrowUp', e)}
+                onMouseUp={(e) => handleDirectionPressEnd('ArrowUp', e)}
+                onMouseLeave={() => handleDirectionPressEnd('ArrowUp')}
+              >
+                ▲
+              </button>
+            </div>
+            <div className="mobile-dpad-row">
+              <button
+                type="button"
+                className="mobile-dpad-btn"
+                aria-label="왼쪽으로 이동"
+                onTouchStart={(e) => handleDirectionPressStart('ArrowLeft', e)}
+                onTouchEnd={(e) => handleDirectionPressEnd('ArrowLeft', e)}
+                onTouchCancel={(e) => handleDirectionPressEnd('ArrowLeft', e)}
+                onMouseDown={(e) => handleDirectionPressStart('ArrowLeft', e)}
+                onMouseUp={(e) => handleDirectionPressEnd('ArrowLeft', e)}
+                onMouseLeave={() => handleDirectionPressEnd('ArrowLeft')}
+              >
+                ◀
+              </button>
+              <button
+                type="button"
+                className="mobile-dpad-btn"
+                aria-label="아래로 이동"
+                onTouchStart={(e) => handleDirectionPressStart('ArrowDown', e)}
+                onTouchEnd={(e) => handleDirectionPressEnd('ArrowDown', e)}
+                onTouchCancel={(e) => handleDirectionPressEnd('ArrowDown', e)}
+                onMouseDown={(e) => handleDirectionPressStart('ArrowDown', e)}
+                onMouseUp={(e) => handleDirectionPressEnd('ArrowDown', e)}
+                onMouseLeave={() => handleDirectionPressEnd('ArrowDown')}
+              >
+                ▼
+              </button>
+              <button
+                type="button"
+                className="mobile-dpad-btn"
+                aria-label="오른쪽으로 이동"
+                onTouchStart={(e) => handleDirectionPressStart('ArrowRight', e)}
+                onTouchEnd={(e) => handleDirectionPressEnd('ArrowRight', e)}
+                onTouchCancel={(e) => handleDirectionPressEnd('ArrowRight', e)}
+                onMouseDown={(e) => handleDirectionPressStart('ArrowRight', e)}
+                onMouseUp={(e) => handleDirectionPressEnd('ArrowRight', e)}
+                onMouseLeave={() => handleDirectionPressEnd('ArrowRight')}
+              >
+                ▶
+              </button>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            className="mobile-chat-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              openQuickChatBar();
+            }}
+          >
+            💬 채팅
+          </button>
         </div>
       )}
     </div>

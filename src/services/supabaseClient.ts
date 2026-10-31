@@ -130,6 +130,9 @@ export async function directRegister(payload: {
 }): Promise<{ user: User; dbMode: string }> {
   const cleanId = payload.id.trim();
   const cleanNick = payload.nickname.trim();
+  if (!cleanNick) {
+    throw new Error('닉네임을 입력해 주세요.');
+  }
   const passwordHash = await bcrypt.hash(payload.password, 10);
 
   if (supabaseClient) {
@@ -143,6 +146,18 @@ export async function directRegister(payload: {
       if (existing) {
         throw new Error('이미 사용 중인 아이디입니다.');
       }
+
+      // 닉네임 중복 검사
+      const { data: dupNickRows } = await supabaseClient
+        .from('users')
+        .select('id')
+        .eq('nickname', cleanNick)
+        .limit(1);
+
+      if (dupNickRows && dupNickRows.length > 0) {
+        throw new Error('이미 사용 중인 닉네임입니다.');
+      }
+
       const { data: created, error: insErr } = await supabaseClient
         .from('users')
         .insert([
@@ -178,6 +193,12 @@ export async function directRegister(payload: {
   const localUsers = readLocalUsers();
   if (localUsers[cleanId]) {
     throw new Error('이미 사용 중인 아이디입니다.');
+  }
+  const dupLocalNick = Object.values(localUsers).some(
+    (u) => u.nickname.trim() === cleanNick
+  );
+  if (dupLocalNick) {
+    throw new Error('이미 사용 중인 닉네임입니다.');
   }
   localUsers[cleanId] = {
     id: cleanId,
@@ -250,6 +271,85 @@ export async function directLogin(payload: {
       characterType: normalizeChar(localUser.character_type),
     },
     dbMode: 'supabase',
+  };
+}
+
+export async function directUpdateNickname(payload: {
+  userId: string;
+  nickname: string;
+}): Promise<{ user: User }> {
+  const { userId } = payload;
+  const cleanNick = payload.nickname.trim();
+
+  if (!cleanNick) {
+    throw new Error('변경할 닉네임을 입력해 주세요.');
+  }
+
+  if (supabaseClient) {
+    // 본인을 제외한 다른 유저 중 동일한 닉네임이 있는지 중복 검사
+    const { data: dupRows, error: dupErr } = await supabaseClient
+      .from('users')
+      .select('id')
+      .eq('nickname', cleanNick)
+      .neq('id', userId)
+      .limit(1);
+
+    if (!dupErr) {
+      if (dupRows && dupRows.length > 0) {
+        throw new Error('이미 사용 중인 닉네임입니다.');
+      }
+
+      const { data: updated, error: updErr } = await supabaseClient
+        .from('users')
+        .update({ nickname: cleanNick })
+        .eq('id', userId)
+        .select('id, nickname, character_type')
+        .single();
+
+      if (!updErr && updated) {
+        return {
+          user: {
+            userId: updated.id,
+            nickname: updated.nickname,
+            characterType: normalizeChar(updated.character_type),
+          },
+        };
+      }
+      if (updErr && !isTableMissing(updErr)) {
+        throw new Error(updErr.message);
+      }
+    } else if (!isTableMissing(dupErr)) {
+      throw new Error(dupErr.message);
+    }
+  }
+
+  const localUsers = readLocalUsers();
+  const isLocalDup = Object.values(localUsers).some(
+    (u) => u.id !== userId && u.nickname.trim() === cleanNick
+  );
+  if (isLocalDup) {
+    throw new Error('이미 사용 중인 닉네임입니다.');
+  }
+
+  const target = localUsers[userId];
+  if (target) {
+    target.nickname = cleanNick;
+    writeLocalUsers(localUsers);
+    return {
+      user: {
+        userId: target.id,
+        nickname: target.nickname,
+        characterType: normalizeChar(target.character_type),
+      },
+    };
+  }
+
+  return {
+    user: {
+      userId,
+      nickname: cleanNick,
+      characterType: 'cat',
+    },
   };
 }
 

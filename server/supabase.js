@@ -133,6 +133,107 @@ async function createUser({ id, passwordHash, nickname }) {
   };
 }
 
+async function findUserByNickname(nickname, excludeUserId = null) {
+  const cleanNick = String(nickname || '').trim();
+  if (!cleanNick) return null;
+
+  if (supabase) {
+    let query = supabase
+      .from('users')
+      .select('id, nickname')
+      .eq('nickname', cleanNick);
+    if (excludeUserId) {
+      query = query.neq('id', excludeUserId);
+    }
+    const { data, error } = await query.limit(1);
+
+    if (error) {
+      if (isTableMissingError(error)) {
+        warnTableMissingOnce('public.users');
+        for (const u of fallbackUsers.values()) {
+          if (
+            u.nickname.trim() === cleanNick &&
+            (!excludeUserId || u.id !== excludeUserId)
+          ) {
+            return u;
+          }
+        }
+        return null;
+      }
+      throw new Error(`Supabase 닉네임 조회 오류: ${error.message}`);
+    }
+    return data && data.length > 0 ? data[0] : null;
+  }
+
+  for (const u of fallbackUsers.values()) {
+    if (
+      u.nickname.trim() === cleanNick &&
+      (!excludeUserId || u.id !== excludeUserId)
+    ) {
+      return u;
+    }
+  }
+  return null;
+}
+
+async function updateUserNickname(id, nickname) {
+  const cleanNick = String(nickname || '').trim();
+  if (!cleanNick) {
+    throw new Error('변경할 닉네임을 입력해 주세요.');
+  }
+
+  const dup = await findUserByNickname(cleanNick, id);
+  if (dup) {
+    const err = new Error('이미 사용 중인 닉네임입니다.');
+    err.statusCode = 409;
+    throw err;
+  }
+
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('users')
+      .update({ nickname: cleanNick })
+      .eq('id', id)
+      .select('id, nickname, character_type')
+      .single();
+
+    if (error) {
+      if (isTableMissingError(error)) {
+        warnTableMissingOnce('public.users');
+        const existing = fallbackUsers.get(id);
+        if (!existing) {
+          throw new Error('사용자를 찾을 수 없습니다.');
+        }
+        existing.nickname = cleanNick;
+        fallbackUsers.set(id, existing);
+        return {
+          id: existing.id,
+          nickname: existing.nickname,
+          character_type: normalizeCharacterType(existing.character_type),
+        };
+      }
+      throw new Error(`Supabase 닉네임 업데이트 오류: ${error.message}`);
+    }
+    return {
+      ...data,
+      character_type: normalizeCharacterType(data.character_type),
+    };
+  }
+
+  const existing = fallbackUsers.get(id);
+  if (!existing) {
+    throw new Error('사용자를 찾을 수 없습니다.');
+  }
+  existing.nickname = cleanNick;
+  fallbackUsers.set(id, existing);
+
+  return {
+    id: existing.id,
+    nickname: existing.nickname,
+    character_type: normalizeCharacterType(existing.character_type),
+  };
+}
+
 async function updateUserCharacter(id, characterType) {
   const normalized = normalizeCharacterType(characterType);
 
@@ -321,7 +422,9 @@ module.exports = {
   supabase,
   isSupabaseConfigured,
   findUserById,
+  findUserByNickname,
   createUser,
+  updateUserNickname,
   updateUserCharacter,
   resetAllUsersCharacters,
   fetchPersistedRooms,
