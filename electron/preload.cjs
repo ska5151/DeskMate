@@ -21,6 +21,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('INIT_OVERLAY', listener);
     return () => ipcRenderer.removeListener('INIT_OVERLAY', listener);
   },
+  onSyncRoomSession: (callback) => {
+    const listener = (_event, data) => callback(data);
+    ipcRenderer.on('SYNC_ROOM_SESSION', listener);
+    return () => ipcRenderer.removeListener('SYNC_ROOM_SESSION', listener);
+  },
   onClearOverlay: (callback) => {
     const listener = () => callback();
     ipcRenderer.on('CLEAR_OVERLAY', listener);

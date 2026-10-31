@@ -118,9 +118,32 @@ function broadcastAppSettings() {
 }
 
 /**
+ * Windows 포커스 잠금(ForegroundLockTimeout)을 우회하여 컨트롤 창을 화면 최상단 앞으로 확실히 표시
+ */
+function bringMainWindowToFront() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createMainWindow();
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore();
+    }
+    mainWindow.setAlwaysOnTop(true);
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.moveTop();
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.setAlwaysOnTop(false);
+      }
+    }, 350);
+  }
+}
+
+/**
  * 방 입장 시 Windows 바탕화면 오버레이 창을 확실하게 깨우고 캐릭터 데이터 전달
  */
-function activateDesktopOverlay(roomData) {
+function activateDesktopOverlay(roomData, syncMainWindow = false) {
   if (!roomData || !roomData.roomId || !roomData.userId) return;
 
   isRoomActive = true;
@@ -133,19 +156,48 @@ function activateDesktopOverlay(roomData) {
 
   if (overlayWindow && !overlayWindow.isDestroyed()) {
     applyOverlayDisplayBounds(selectedDisplayId);
+    overlayWindow.showInactive();
     overlayWindow.show();
     overlayWindow.setAlwaysOnTop(true, 'screen-saver');
     overlayWindow.moveTop();
     overlayWindow.setIgnoreMouseEvents(true, { forward: true });
 
+    const sendOverlayInit = () => {
+      if (overlayWindow && !overlayWindow.isDestroyed() && currentRoomData) {
+        overlayWindow.showInactive();
+        overlayWindow.show();
+        overlayWindow.setAlwaysOnTop(true, 'screen-saver');
+        overlayWindow.moveTop();
+        overlayWindow.webContents.send('INIT_OVERLAY', currentRoomData);
+      }
+    };
+
     if (overlayWindow.webContents.isLoading()) {
-      overlayWindow.webContents.once('did-finish-load', () => {
-        overlayWindow.webContents.send('INIT_OVERLAY', roomData);
-      });
+      overlayWindow.webContents.once('did-finish-load', sendOverlayInit);
     } else {
-      overlayWindow.webContents.send('INIT_OVERLAY', roomData);
+      sendOverlayInit();
     }
+
+    // React 마운트 타이밍 경합을 100% 방지하기 위해 다중 재전송
+    setTimeout(sendOverlayInit, 250);
+    setTimeout(sendOverlayInit, 800);
   }
+
+  // 웹 브라우저나 딥링크에서 방 입장 시 Electron 메인 컨트롤 창도 동일 세션으로 즉시 동기화
+  if (syncMainWindow && mainWindow && !mainWindow.isDestroyed()) {
+    const sendMainSync = () => {
+      if (mainWindow && !mainWindow.isDestroyed() && currentRoomData) {
+        mainWindow.webContents.send('SYNC_ROOM_SESSION', currentRoomData);
+      }
+    };
+    if (mainWindow.webContents.isLoading()) {
+      mainWindow.webContents.once('did-finish-load', sendMainSync);
+    } else {
+      sendMainSync();
+    }
+    setTimeout(sendMainSync, 300);
+  }
+
   broadcastAppSettings();
 }
 
@@ -219,23 +271,49 @@ function startLocalDesktopBridgeServer() {
         return;
       }
 
-      if (req.url === '/health' && req.method === 'GET') {
+      const parsedReqUrl = new URL(req.url || '/', `http://127.0.0.1:${BRIDGE_PORT}`);
+
+      if (parsedReqUrl.pathname === '/health' && req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, desktopOverlayReady: true }));
+        res.end(
+          JSON.stringify({
+            ok: true,
+            desktopOverlayReady: true,
+            isRoomActive,
+            currentRoomData,
+          })
+        );
         return;
       }
 
-      if (req.url === '/open' && (req.method === 'POST' || req.method === 'GET')) {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.show();
-          mainWindow.focus();
-        }
+      if (
+        parsedReqUrl.pathname === '/open' &&
+        (req.method === 'POST' || req.method === 'GET')
+      ) {
+        bringMainWindowToFront();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, opened: true }));
         return;
       }
 
-      if (req.url === '/enter-room' && req.method === 'POST') {
+      // 1) GET /enter-room?roomId=...&userId=... (CORS 프리플라이트 없이 즉시 호출 가능)
+      if (parsedReqUrl.pathname === '/enter-room' && req.method === 'GET') {
+        const roomData = {
+          roomId: parsedReqUrl.searchParams.get('roomId') || 'plaza',
+          roomName: parsedReqUrl.searchParams.get('roomName') || '광장',
+          userId: parsedReqUrl.searchParams.get('userId') || 'guest',
+          nickname: parsedReqUrl.searchParams.get('nickname') || '게스트',
+          characterType: parsedReqUrl.searchParams.get('characterType') || 'cat',
+          statusBadge: parsedReqUrl.searchParams.get('statusBadge') || 'online',
+        };
+        activateDesktopOverlay(roomData, true);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+
+      // 2) POST /enter-room
+      if (parsedReqUrl.pathname === '/enter-room' && req.method === 'POST') {
         let body = '';
         req.on('data', (chunk) => {
           body += chunk;
@@ -243,7 +321,7 @@ function startLocalDesktopBridgeServer() {
         req.on('end', () => {
           try {
             const roomData = JSON.parse(body);
-            activateDesktopOverlay(roomData);
+            activateDesktopOverlay(roomData, true);
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ ok: true }));
           } catch (e) {
@@ -254,7 +332,10 @@ function startLocalDesktopBridgeServer() {
         return;
       }
 
-      if (req.url === '/leave-room' && req.method === 'POST') {
+      if (
+        parsedReqUrl.pathname === '/leave-room' &&
+        (req.method === 'POST' || req.method === 'GET')
+      ) {
         deactivateDesktopOverlay();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
@@ -287,11 +368,6 @@ function handleDeepLinkUrl(rawUrl) {
     const parsed = new URL(rawUrl);
     const targetAction = `${parsed.hostname}${parsed.pathname}`;
 
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.show();
-      mainWindow.focus();
-    }
-
     if (targetAction.includes('enter-room')) {
       const roomData = {
         roomId: parsed.searchParams.get('roomId') || 'plaza',
@@ -301,13 +377,13 @@ function handleDeepLinkUrl(rawUrl) {
         characterType: parsed.searchParams.get('characterType') || 'cat',
         statusBadge: parsed.searchParams.get('statusBadge') || 'online',
       };
-      activateDesktopOverlay(roomData);
+      activateDesktopOverlay(roomData, true);
+      return;
     }
+
+    bringMainWindowToFront();
   } catch {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.show();
-      mainWindow.focus();
-    }
+    bringMainWindowToFront();
   }
 }
 
@@ -316,10 +392,7 @@ function createTray() {
   tray.setToolTip('DeskMate - 바탕화면 멀티플레이어 캐릭터 채팅');
 
   tray.on('click', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.show();
-      mainWindow.focus();
-    }
+    bringMainWindowToFront();
   });
 
   updateTrayMenu();
@@ -332,10 +405,7 @@ function updateTrayMenu() {
     {
       label: 'DeskMate 컨트롤 창 열기',
       click: () => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.show();
-          mainWindow.focus();
-        }
+        bringMainWindowToFront();
       },
     },
     {
@@ -398,10 +468,15 @@ function createMainWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
     },
   });
 
   loadWindowWithDistFallback(mainWindow, 'main');
+
+  mainWindow.once('ready-to-show', () => {
+    bringMainWindowToFront();
+  });
 
   mainWindow.on('close', (e) => {
     if (!isQuitting) {
@@ -425,6 +500,7 @@ function createOverlayWindow() {
     height,
     x,
     y,
+    show: false,
     transparent: true, // 배경 투명
     frame: false, // 창 테두리 및 타이틀바 제거
     alwaysOnTop: true, // 항상 최상단 유지
@@ -436,16 +512,17 @@ function createOverlayWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
     },
   });
 
   overlayWindow.setAlwaysOnTop(true, 'screen-saver');
   overlayWindow.setIgnoreMouseEvents(true, { forward: true });
   loadWindowWithDistFallback(overlayWindow, 'overlay');
-  overlayWindow.hide();
 
   overlayWindow.webContents.on('did-finish-load', () => {
     if (isRoomActive && currentRoomData && !isOverlayHiddenByUser) {
+      overlayWindow.showInactive();
       overlayWindow.show();
       overlayWindow.setAlwaysOnTop(true, 'screen-saver');
       overlayWindow.moveTop();
@@ -467,9 +544,8 @@ if (!gotTheLock) {
     const deepLinkArg = commandLine.find((arg) => arg.startsWith('deskmate://'));
     if (deepLinkArg) {
       handleDeepLinkUrl(deepLinkArg);
-    } else if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.show();
-      mainWindow.focus();
+    } else {
+      bringMainWindowToFront();
     }
   });
 }

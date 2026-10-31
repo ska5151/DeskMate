@@ -22,6 +22,9 @@ export interface ElectronAPI {
   moveOverlayDisplay: (displayId: number) => void;
 
   onInitOverlay: (callback: (data: RoomOverlayInitData) => void) => () => void;
+  onSyncRoomSession: (
+    callback: (data: RoomOverlayInitData) => void
+  ) => () => void;
   onClearOverlay: (callback: () => void) => () => void;
   onRoomEventRelayed: (
     callback: (data: { event: string; payload: any }) => void

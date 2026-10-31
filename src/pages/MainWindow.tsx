@@ -106,8 +106,49 @@ export default function MainWindow() {
       }
     );
 
+    // 웹이나 딥링크(deskmate://enter-room)로 방 입장 시 Electron 메인 컨트롤 창도 즉시 해당 방/캐릭터 세션으로 동기화
+    const syncFromRoomData = (roomData: {
+      roomId: string;
+      roomName: string;
+      userId: string;
+      nickname: string;
+      characterType: CharacterType;
+      statusBadge?: StatusBadgeType;
+    }) => {
+      if (!roomData || !roomData.roomId || !roomData.userId) return;
+      const syncedUser: User = {
+        userId: roomData.userId,
+        nickname: roomData.nickname,
+        characterType: roomData.characterType,
+      };
+      const syncedRoom: RoomSummary = {
+        roomId: roomData.roomId,
+        roomName: roomData.roomName || '광장',
+        userCount: 1,
+      };
+      setUser(syncedUser);
+      setSelectedChar(roomData.characterType);
+      if (roomData.statusBadge) {
+        setMyStatusBadge(roomData.statusBadge);
+      }
+      connectAndEnterRoom(syncedRoom, syncedUser, true);
+    };
+
+    window.electronAPI?.getCurrentRoom?.().then((savedRoom) => {
+      if (savedRoom) {
+        syncFromRoomData(savedRoom);
+      }
+    });
+
+    const removeSyncSessionListener = window.electronAPI?.onSyncRoomSession?.(
+      (roomData) => {
+        syncFromRoomData(roomData);
+      }
+    );
+
     return () => {
       removeSettingsListener?.();
+      removeSyncSessionListener?.();
     };
   }, []);
 
@@ -115,29 +156,22 @@ export default function MainWindow() {
   useEffect(() => {
     if (window.electronAPI) return;
 
-    let cancelled = false;
     (async () => {
       try {
-        // 1. 이미 백그라운드/트레이에 켜져 있는 로컬 Electron이 있다면 즉시 창을 앞으로 띄움
+        // 1. 이미 켜져 있는 로컬 Electron이 있다면 즉시 창을 화면 최상단 앞으로 띄움
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 700);
+        const timer = setTimeout(() => controller.abort(), 450);
         const res = await fetch('http://127.0.0.1:45678/open', {
-          method: 'POST',
+          method: 'GET',
           signal: controller.signal,
         });
         clearTimeout(timer);
         if (res.ok) return;
       } catch {
-        // 2. 로컬 Electron이 꺼져 있으면 자동으로 deskmate://open 프로토콜을 실행하여 Electron 앱 기동!
-        if (!cancelled) {
-          window.location.href = 'deskmate://open';
-        }
+        // 2. 로컬 Electron이 꺼져 있거나 응답이 없으면 즉시 deskmate://open 프로토콜 실행!
+        window.location.href = 'deskmate://open';
       }
     })();
-
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   useEffect(() => {
@@ -305,8 +339,13 @@ export default function MainWindow() {
   };
 
   // 4. 실제 방 입장 및 바탕화면 오버레이 활성화
-  const connectAndEnterRoom = (room: RoomSummary) => {
-    if (!user || !user.characterType) return;
+  const connectAndEnterRoom = (
+    room: RoomSummary,
+    overrideUser?: User,
+    skipIpcTrigger = false
+  ) => {
+    const activeUser = overrideUser || user;
+    if (!activeUser || !activeUser.characterType) return;
 
     setCurrentRoom(room);
     setMessages([]);
@@ -315,24 +354,45 @@ export default function MainWindow() {
     const overlayPayload = {
       roomId: room.roomId,
       roomName: room.roomName,
-      userId: user.userId,
-      nickname: user.nickname,
-      characterType: user.characterType,
+      userId: activeUser.userId,
+      nickname: activeUser.nickname,
+      characterType: activeUser.characterType,
       statusBadge: myStatusBadge,
     };
 
     // Electron IPC로 바탕화면 오버레이 창 활성화
-    window.electronAPI?.enterRoom(overlayPayload);
+    if (!skipIpcTrigger) {
+      window.electronAPI?.enterRoom(overlayPayload);
+    }
 
-    // 만약 일반 웹 브라우저(Vercel URL)에서 접속한 경우에도 로컬 PC에서 실행 중인 Electron 바탕화면 오버레이 브릿지(127.0.0.1:45678)를 깨움!
+    // 만약 일반 웹 브라우저(Vercel URL)에서 방에 입장한 경우:
+    // 1) 로컬 브릿지(127.0.0.1:45678/enter-room?...) GET 호출 (CORS 프리플라이트 없음)
+    // 2) 로컬 브릿지가 응답하지 않으면 즉시 자동으로 deskmate://enter-room?... 딥링크를 실행하여 바탕화면에 캐릭터 표시!
     if (!window.electronAPI) {
-      fetch('http://127.0.0.1:45678/enter-room', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(overlayPayload),
-      }).catch(() => {
-        // 로컬 Electron 앱이 아직 안 켜져 있으면 아래 deskmate:// 버튼으로 실행 가능
-      });
+      const qs = new URLSearchParams({
+        roomId: overlayPayload.roomId,
+        roomName: overlayPayload.roomName,
+        userId: overlayPayload.userId,
+        nickname: overlayPayload.nickname,
+        characterType: overlayPayload.characterType,
+        statusBadge: overlayPayload.statusBadge,
+      }).toString();
+
+      (async () => {
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 500);
+          const res = await fetch(`http://127.0.0.1:45678/enter-room?${qs}`, {
+            method: 'GET',
+            signal: controller.signal,
+          });
+          clearTimeout(timer);
+          if (res.ok) return;
+          window.location.href = `deskmate://enter-room?${qs}`;
+        } catch {
+          window.location.href = `deskmate://enter-room?${qs}`;
+        }
+      })();
     }
 
     socketRef.current?.disconnect();

@@ -144,12 +144,18 @@ export default function OverlayWindow({
       activateOverlayWithRoomData(embeddedRoomData);
     }
 
-    // 2. Electron 메인 프로세스에 이미 활성화된 방 정보가 있는지 능동 조회 (타이밍 누락 100% 방지)
-    window.electronAPI?.getCurrentRoom?.().then((savedRoom) => {
-      if (savedRoom) {
-        activateOverlayWithRoomData(savedRoom);
-      }
-    });
+    // 2. Electron 메인 프로세스에 이미 활성화된 방 정보가 있는지 능동 조회 + 1초 주기 폴링 (타이밍 누락 0% 보장)
+    const checkSavedRoomFromMain = () => {
+      if (myInfoRef.current) return;
+      window.electronAPI?.getCurrentRoom?.().then((savedRoom) => {
+        if (savedRoom && !myInfoRef.current) {
+          activateOverlayWithRoomData(savedRoom);
+        }
+      });
+    };
+
+    checkSavedRoomFromMain();
+    const roomSyncPollTimer = setInterval(checkSavedRoomFromMain, 1000);
 
     // 3. 메인 창 또는 로컬 브릿지에서 방 입장 시 전달받은 데이터로 활성화
     const removeInitListener = window.electronAPI?.onInitOverlay((roomData) => {
@@ -292,6 +298,7 @@ export default function OverlayWindow({
     });
 
     return () => {
+      clearInterval(roomSyncPollTimer);
       removeInitListener?.();
       removeClearListener?.();
       removeQuickChatListener?.();
